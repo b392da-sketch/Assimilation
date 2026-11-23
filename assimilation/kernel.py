@@ -115,6 +115,12 @@ class SuspicionReport:
 class Relationship:
     trust: int
     familiarity: int = 0
+    generator_assists: int = 0
+    last_generator_assist_event: int | None = None
+
+    @property
+    def generator_trust_bonus(self) -> int:
+        return min(15, self.generator_assists * 5)
 
 
 @dataclass
@@ -400,6 +406,7 @@ class Simulation:
         organism = self.organisms.get(agent.name)
         encounter = self.encounters.get(agent.name)
         requester = agent.help_requested_by
+        relationship = agent.relationships[requester] if requester else None
         return DecisionView(
             tick=self.tick,
             room=agent.room,
@@ -427,7 +434,8 @@ class Simulation:
             checked_generator=agent.checked_generator,
             already_requested_help=bool(agent.requested_help_from),
             requester=requester,
-            requester_trust=agent.relationships[requester].trust if requester else 0,
+            requester_trust=relationship.trust if relationship else 0,
+            generator_trust_bonus=relationship.generator_trust_bonus if relationship else 0,
             help_accepted=agent.help_accepted,
             encounter_target=encounter.target if encounter else None,
             can_start_encounter=organism is not None and self.tick >= organism.recovery_until,
@@ -681,6 +689,9 @@ class Simulation:
                 target.help_requested_by = None
                 target.help_accepted = False
                 target.requested_help_from.clear()
+                for relationship in target.relationships.values():
+                    relationship.generator_assists = 0
+                    relationship.last_generator_assist_event = None
                 target.goal = None
                 self.history.append(Event(self.tick, name, "assimilation_completed", actor.room, (),
                                           subject=target.name, causes=(encounter.start_event,),
@@ -716,7 +727,8 @@ class Simulation:
             )
             self.refuel_start_event = len(self.history)
             return True
-        action = "refuel_completed" if power.refuel_worker == agent.name else "refuel_assisted"
+        worker = self.agents_by_name[power.refuel_worker]
+        action = "refuel_completed" if worker is agent else "refuel_assisted"
         power.main_fuel = power.reserve_fuel
         power.reserve_fuel = 0
         power.refuel_worker = None
@@ -728,6 +740,11 @@ class Simulation:
             reason="The second refueling action transferred reserve fuel to the main supply.",
         )
         self.refuel_finish_event = len(self.history)
+        if (worker is not agent and worker.alive and not worker.sleep_until
+                and worker.room == agent.room):
+            relationship = worker.relationships[agent.name]
+            relationship.generator_assists += 1
+            relationship.last_generator_assist_event = self.refuel_finish_event
         return True
 
     def record(

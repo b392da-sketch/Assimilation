@@ -79,6 +79,7 @@ class DecisionView:
     already_requested_help: bool
     requester: str | None
     requester_trust: int
+    generator_trust_bonus: int
     help_accepted: bool
     encounter_target: str | None
     can_start_encounter: bool
@@ -185,11 +186,12 @@ def immediate_action(
         cooperation = 2 * view.disposition.cooperativeness
         hunger_cost = 2 * max(0, view.hunger - view.meal_threshold)
         fatigue_cost = 3 * max(0, view.fatigue - view.rest_threshold + 2)
-        score = view.requester_trust + cooperation - hunger_cost - fatigue_cost
+        score = view.requester_trust + view.generator_trust_bonus + cooperation - hunger_cost - fatigue_cost
         willing = score >= 65 and view.fatigue < view.rest_threshold
         reason = (
             f"Help score {score} (minimum 65): trust {view.requester_trust}, "
-            f"cooperation bias {cooperation}, hunger cost {hunger_cost}, fatigue cost {fatigue_cost}. "
+            f"generator experience {view.generator_trust_bonus}, cooperation bias {cooperation}, "
+            f"hunger cost {hunger_cost}, fatigue cost {fatigue_cost}. "
             f"Fatigue {view.fatigue} must be below {view.rest_threshold}."
         )
         return record(
