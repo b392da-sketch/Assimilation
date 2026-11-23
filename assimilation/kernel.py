@@ -13,6 +13,8 @@ from .policy import (
     VISIBLE_EXHAUSTION, choose,
 )
 
+from .relationships import Experience, Relationship
+
 MAX_NEED = 12
 MINUTES_PER_TICK = 10
 TICKS_PER_HOUR = 60 // MINUTES_PER_TICK
@@ -111,16 +113,10 @@ class SuspicionReport:
     concern: int
 
 
-@dataclass
-class Relationship:
-    trust: int
-    familiarity: int = 0
-    generator_assists: int = 0
-    last_generator_assist_event: int | None = None
-
-    @property
-    def generator_trust_bonus(self) -> int:
-        return min(15, self.generator_assists * 5)
+@dataclass(frozen=True)
+class HeardFoodReport:
+    event_id: int
+    belief: FoodBelief
 
 
 @dataclass
@@ -180,6 +176,8 @@ class Inhabitant:
     sent_concerns: dict[tuple[str, str], int] = field(default_factory=dict)
     help_requested_by: str | None = None
     help_accepted: bool = False
+    help_commitment_event: int | None = None
+    pending_food_reports: dict[str, HeardFoodReport] = field(default_factory=dict)
     requested_help_from: set[str] = field(default_factory=set)
     examinations: dict[str, Literal["clear", "inconclusive", "anomaly"]] = field(default_factory=dict)
     containment_attempt: tuple[str, int] | None = None
@@ -311,6 +309,7 @@ class Simulation:
                     inhabitant.requested_help_from.clear()
                     inhabitant.help_requested_by = None
                     inhabitant.help_accepted = False
+                    inhabitant.help_commitment_event = None
             exposure = cold if outdoors else inhabitant.felt_cold
             if inhabitant.sleep_until and self.tick >= inhabitant.sleep_until:
                 inhabitant.sleep_until = 0
@@ -394,12 +393,18 @@ class Simulation:
         observations = []
         for peer in peers:
             witnessed = agent.witnessed_concerns.get(peer.name)
+            relationship = agent.relationships[peer.name]
             observations.append(LocalPeer(
                 name=peer.name,
                 visibly_exhausted=peer.fatigue >= VISIBLE_EXHAUSTION,
                 contained=peer.contained,
                 available_for_generator_help=peer.duty_room != generator and not peer.sleep_until,
                 concern=agent.concern_about(peer.name),
+                help_expectation=relationship.willingness_to_help,
+                help_evidence_ids=tuple(
+                    item.event_id for item in relationship.evidence
+                    if item.kind in ("generator_assistance", "help_declined")
+                ),
                 witnessed_at=witnessed.observed_at if witnessed else None,
                 examination=agent.examinations.get(peer.name),
             ))
@@ -436,6 +441,11 @@ class Simulation:
             requester=requester,
             requester_trust=relationship.trust if relationship else 0,
             generator_trust_bonus=relationship.generator_trust_bonus if relationship else 0,
+            commitment_reliability=relationship.commitment_reliability if relationship else 0,
+            requester_evidence_ids=tuple(
+                item.event_id for item in relationship.evidence
+                if item.kind in ("generator_assistance", "commitment_fulfilled", "commitment_withdrawn")
+            ) if relationship else (),
             help_accepted=agent.help_accepted,
             encounter_target=encounter.target if encounter else None,
             can_start_encounter=organism is not None and self.tick >= organism.recovery_until,
@@ -490,11 +500,13 @@ class Simulation:
             return False
         self.shared_reports[agent.name, peer.name] = belief.available
         relationship = peer.relationships[agent.name]
+        credibility = max(0, min(100, relationship.trust + relationship.food_report_credibility))
         report = FoodBelief(
             belief.available,
             belief.observed_at,
             (*belief.sources, peer.name),
-            belief.confidence * relationship.trust // 100,
+            belief.confidence * credibility // 100,
+            belief.source_event,
         )
         current = peer.food_belief
         if current is None or (
@@ -503,7 +515,13 @@ class Simulation:
             and (report.confidence > current.confidence or report.observed_at > current.observed_at)
         ):
             peer.food_belief = report
-        self.record(agent, "tell", agent.room, recipient=peer.name, testimony=belief)
+        reason = (
+            f"Recipient applied food-report credibility {relationship.food_report_credibility} "
+            f"to trust {relationship.trust}. Received confidence {report.confidence}."
+            if relationship.food_report_credibility else None
+        )
+        self.record(agent, "tell", agent.room, recipient=peer.name, testimony=belief, reason=reason)
+        peer.pending_food_reports[agent.name] = HeardFoodReport(len(self.history), belief)
         return True
 
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
@@ -549,10 +567,27 @@ class Simulation:
                 return False
             if action == "accept_help" and agent.help_accepted:
                 return False
+            commitment = agent.help_commitment_event
             agent.help_accepted = action == "accept_help"
-            if not agent.help_accepted:
+            self.record(agent, action, agent.room, recipient=intent.recipient,
+                        causes=(commitment,) if commitment else ())
+            event_id = len(self.history)
+            if agent.help_accepted:
+                agent.help_commitment_event = event_id
+            else:
+                requester = self.agents_by_name[intent.recipient]
+                if self.observed_event(requester.name, event_id):
+                    witnessed_commitment = (
+                        commitment if commitment and self.observed_event(requester.name, commitment)
+                        else None
+                    )
+                    kind = "commitment_withdrawn" if witnessed_commitment else "help_declined"
+                    requester.relationships[agent.name].learn(
+                        Experience(kind, event_id, related_event_id=witnessed_commitment),
+                        requester.disposition.caution,
+                    )
                 agent.help_requested_by = None
-            self.record(agent, action, agent.room, recipient=intent.recipient)
+                agent.help_commitment_event = None
             return True
         elif action == "refuel":
             return self.refuel(agent)
@@ -689,9 +724,12 @@ class Simulation:
                 target.help_requested_by = None
                 target.help_accepted = False
                 target.requested_help_from.clear()
-                for relationship in target.relationships.values():
-                    relationship.generator_assists = 0
-                    relationship.last_generator_assist_event = None
+                target.help_commitment_event = None
+                target.pending_food_reports.clear()
+                target.relationships = {
+                    peer: Relationship(relationship.trust)
+                    for peer, relationship in target.relationships.items()
+                }
                 target.goal = None
                 self.history.append(Event(self.tick, name, "assimilation_completed", actor.room, (),
                                           subject=target.name, causes=(encounter.start_event,),
@@ -715,6 +753,7 @@ class Simulation:
             agent.checked_generator = True
             agent.help_requested_by = None
             agent.help_accepted = False
+            agent.help_commitment_event = None
             self.record(agent, "generator_checked", agent.room)
             return False
         if power.refuel_worker is None:
@@ -732,20 +771,56 @@ class Simulation:
         power.main_fuel = power.reserve_fuel
         power.reserve_fuel = 0
         power.refuel_worker = None
-        agent.help_requested_by = None
-        agent.help_accepted = False
         parent = self.refuel_start_event
         self.record(
             agent, action, agent.room, causes=(parent,) if parent is not None else (),
             reason="The second refueling action transferred reserve fuel to the main supply.",
         )
         self.refuel_finish_event = len(self.history)
-        if (worker is not agent and worker.alive and not worker.sleep_until
-                and worker.room == agent.room):
-            relationship = worker.relationships[agent.name]
-            relationship.generator_assists += 1
-            relationship.last_generator_assist_event = self.refuel_finish_event
+        witnesses = {name for name, _ in self.history[-1].observations}
+        if worker is not agent and worker.name in witnesses:
+            worker.relationships[agent.name].learn(
+                Experience("generator_assistance", self.refuel_finish_event, related_event_id=parent),
+                worker.disposition.caution,
+            )
+        for contributor in ((worker, agent) if worker is not agent else (agent,)):
+            if contributor.name not in witnesses:
+                continue
+            requester = contributor.help_requested_by
+            commitment = contributor.help_commitment_event
+            if commitment and requester in witnesses and self.observed_event(requester, commitment):
+                recipient = self.agents_by_name[requester]
+                recipient.relationships[contributor.name].learn(
+                    Experience("commitment_fulfilled", self.refuel_finish_event,
+                               related_event_id=commitment),
+                    recipient.disposition.caution,
+                )
+            if contributor is agent or commitment:
+                contributor.help_requested_by = None
+                contributor.help_accepted = False
+                contributor.help_commitment_event = None
         return True
+
+    def observed_event(self, name: str, event_id: int) -> bool:
+        return any(observer == name for observer, _ in self.history[event_id - 1].observations)
+
+    def verify_food_reports(self, observer: Inhabitant, available: bool, event_id: int) -> None:
+        for source, report in observer.pending_food_reports.items():
+            belief = report.belief
+            # Stock may run out after a truthful positive report.
+            if belief.available and not available:
+                continue
+            relationship = observer.relationships[source]
+            origin_event = belief.source_event
+            if origin_event is None or origin_event <= relationship.verified_food_origin_event:
+                continue
+            relationship.verified_food_origin_event = origin_event
+            kind = "food_report_supported" if belief.available == available else "food_report_contradicted"
+            relationship.learn(
+                Experience(kind, event_id, "verified testimony", report.event_id, origin_event),
+                observer.disposition.caution,
+            )
+        observer.pending_food_reports.clear()
 
     def record(
         self, agent: Inhabitant, action: str, room: str, destination: str | None = None,
@@ -755,6 +830,7 @@ class Simulation:
         causes: tuple[int, ...] = (), reason: str | None = None,
     ) -> None:
         observations = []
+        event_id = len(self.history) + 1
         for observer in self.inhabitants:
             if not observer.alive or (observer.sleep_until and observer is not agent):
                 continue
@@ -772,7 +848,9 @@ class Simulation:
             observer.memory.append(observation)
             observations.append((observer.name, observation))
             if observer is not agent:
-                observer.relationships[agent.name].familiarity += 1
+                relationship = observer.relationships[agent.name]
+                relationship.familiarity += 1
+                relationship.last_contact_event = event_id
                 if visible_as == "uneasy_encounter":
                     if observer.examinations.get(agent.name) != "anomaly":
                         observer.examinations.pop(agent.name, None)
@@ -782,9 +860,9 @@ class Simulation:
                         observer.name, agent.name, self.tick, strength,
                     )
             if action in ("eat", "found_no_food"):
-                observer.food_belief = FoodBelief(
-                    action == "eat", self.tick, (observer.name,), 100,
-                )
+                available = action == "eat"
+                self.verify_food_reports(observer, available, event_id)
+                observer.food_belief = FoodBelief(available, self.tick, (observer.name,), 100, event_id)
         event = Event(
             self.tick, agent.name, action, room, tuple(observations), destination,
             recipient, testimony, subject, concern, causes, reason,

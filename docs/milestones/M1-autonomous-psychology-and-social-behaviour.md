@@ -227,3 +227,50 @@ at 67. A departed worker gains no trust from the same completion. Nine
 seeded event histories matched the preceding slice. They do not exercise a
 later request influenced by prior assistance, so that effect is verified
 with the controlled fixture.
+
+### Evidence-based interpersonal memory
+
+Each relationship keeps twelve recent significant evidence records alongside
+its accumulated expectations. The record distinguishes firsthand experience
+from a report checked against a later observation. It points to the original
+event and, when relevant, to the promise or report it evaluates. Category
+watermarks and the last verified food origin prevent duplicate credit after
+details roll off. Older out-of-order evidence can be dropped by those
+watermarks. Familiarity still counts observed contact separately and stores
+the most recent contact event.
+
+| Dimension | Evidence | Decision effect |
+| --- | --- | --- |
+| Generator competence | Witness a colleague complete one's refueling work | Adds up to 15 to generator help decisions |
+| Commitment reliability | Witness a promise and its later fulfillment or explicit withdrawal | Adjusts later generator help scores |
+| Willingness to help | Receive observable assistance or a decline | Ranks eligible local helpers |
+| Food-report credibility | Check a report against a subsequent firsthand stock observation | Adjusts confidence in future food reports only |
+
+A refusal affects willingness without counting as a broken promise.
+A later empty store leaves a positive report unresolved because supplies may
+have run out since delivery. A pending report can be
+replaced by a newer report. The model treats a corroborating observation as
+support for the report, with no guarantee about past stock or the speaker's
+honesty. Caution increases the weight of contradiction and withdrawal.
+Objective history supplies evidence only after an agent witnesses the
+relevant event or receives the report. Conversion clears learned
+relationship state and pending testimony for the new controller, while
+others retain their experiences with that body.
+
+The observer's `inspect NAME` output contains relationship dimensions and
+provenance. `decisions NAME` shows learned terms in help scores and the
+event IDs still retained for those terms. The food-report event explanation
+records the confidence adjustment when applicable.
+
+Compared with merged PR #6, 39 seeded runs kept the same ordered action
+sequences and social action counts. The comparison covered three ordinary
+ten-day runs, 12 low-fuel runs, 12 hidden-organism runs and 12 ration-shortage
+runs. The revised system retained 11 firsthand assistance records across the
+low-fuel runs, and 253 corroborated food reports across the shortage runs
+with 542 messages. Hidden-organism runs still produced 74 warnings,
+16 completed assimilations and three containments. The sampled histories
+did not contain a naturally occurring follow-up request changed by prior
+learning. Controlled tests exercise altered helper selection, promise
+withdrawal, contradictory reports, and evidence rollover. The established
+long-lived refueling setup and the lack of autonomous restocking remain
+limitations.

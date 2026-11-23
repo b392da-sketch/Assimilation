@@ -31,6 +31,7 @@ class FoodBelief:
     observed_at: int
     sources: tuple[str, ...]
     confidence: int
+    source_event: int | None = None
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,8 @@ class LocalPeer:
     contained: bool
     available_for_generator_help: bool
     concern: int
+    help_expectation: int
+    help_evidence_ids: tuple[int, ...]
     witnessed_at: int | None
     examination: str | None
 
@@ -80,6 +83,8 @@ class DecisionView:
     requester: str | None
     requester_trust: int
     generator_trust_bonus: int
+    commitment_reliability: int
+    requester_evidence_ids: tuple[int, ...]
     help_accepted: bool
     encounter_target: str | None
     can_start_encounter: bool
@@ -91,6 +96,7 @@ class Evaluation:
     option: str
     reason: str
     intent: Intent | None = None
+    evidence_event_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -144,9 +150,12 @@ def power_response(view: DecisionView, rooms: dict[str, Room]) -> Intent | None:
     if view.duty_room != generator:
         return None
     if not view.already_requested_help:
-        for peer in view.peers:
-            if peer.available_for_generator_help:
-                return Intent("request_help", recipient=peer.name)
+        peer = max(
+            (peer for peer in view.peers if peer.available_for_generator_help),
+            key=lambda peer: peer.help_expectation, default=None,
+        )
+        if peer:
+            return Intent("request_help", recipient=peer.name)
     step = first_step(rooms, view.room, lambda room: room.name == generator)
     return Intent("move", step) if step else None
 
@@ -186,21 +195,30 @@ def immediate_action(
         cooperation = 2 * view.disposition.cooperativeness
         hunger_cost = 2 * max(0, view.hunger - view.meal_threshold)
         fatigue_cost = 3 * max(0, view.fatigue - view.rest_threshold + 2)
-        score = view.requester_trust + view.generator_trust_bonus + cooperation - hunger_cost - fatigue_cost
+        score = (view.requester_trust + view.generator_trust_bonus + view.commitment_reliability
+                 + cooperation - hunger_cost - fatigue_cost)
         willing = score >= 65 and view.fatigue < view.rest_threshold
         reason = (
             f"Help score {score} (minimum 65): trust {view.requester_trust}, "
             f"generator experience {view.generator_trust_bonus}, cooperation bias {cooperation}, "
-            f"hunger cost {hunger_cost}, fatigue cost {fatigue_cost}. "
+            f"commitment reliability {view.commitment_reliability}, hunger cost {hunger_cost}, "
+            f"fatigue cost {fatigue_cost}. "
             f"Fatigue {view.fatigue} must be below {view.rest_threshold}."
         )
         return record(
             evaluations, "generator response", reason,
             Intent("accept_help" if willing else "decline_help", recipient=view.requester),
+            view.requester_evidence_ids,
         )
     response = power_response(view, rooms)
     if response and view.requester:
         reason = "An accepted request guides the generator response."
+    elif response and response.action == "request_help":
+        eligible = [peer for peer in view.peers if peer.available_for_generator_help]
+        scores = ", ".join(f"{peer.name} {peer.help_expectation}" for peer in eligible)
+        evidence_ids = tuple(sorted({event_id for peer in eligible for event_id in peer.help_evidence_ids}))
+        reason = f"Selected {response.recipient} by local willingness to help. Scores were {scores}."
+        return record(evaluations, "generator response", reason, response, evidence_ids)
     elif response:
         reason = "Local cold and the agent's location or duty permit a generator response."
     else:
@@ -210,8 +228,9 @@ def immediate_action(
 
 def record(
     evaluations: list[Evaluation], option: str, reason: str, intent: Intent | None = None,
+    evidence_event_ids: tuple[int, ...] = (),
 ) -> Intent | None:
-    evaluations.append(Evaluation(option, reason, intent))
+    evaluations.append(Evaluation(option, reason, intent, evidence_event_ids))
     return intent
 
 
