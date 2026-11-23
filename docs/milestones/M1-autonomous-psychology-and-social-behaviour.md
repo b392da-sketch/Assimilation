@@ -185,3 +185,29 @@ resolution by ID. Later end-of-tick encounter outcomes still use the
 objective event history. The observer retains 32 decisions per inhabitant.
 The policy records only alternatives it reached before short-circuiting.
 It still uses the existing priorities.
+
+### Dispositions slice
+
+Each inhabitant now has seeded cooperativeness and caution. A scenario can
+override either trait by passing named `Disposition` profiles to
+`Simulation`. Profiles remain stable during the run. The observer shows
+them with `inspect NAME` and shows the actual calculation with
+`decisions NAME`.
+
+Cooperativeness biases a help decision alongside trust, hunger and fatigue.
+Exhaustion can still override a strong willingness to help. Caution adjusts
+the level of local concern at which an inhabitant leaves a room. Neither
+trait adds evidence or gives access to another agent's private state.
+Trait effects are intentionally limited to these two decision rules.
+
+M1-D03 uses two recipients with the same trust, fatigue, hunger and request.
+Their different cooperation profiles yield opposite responses. High trust
+can overcome a low cooperation bias, and fatigue can override a high one.
+The caution fixture similarly keeps concern fixed while varying disposition.
+
+Three ordinary ten-day histories matched the preceding slice exactly.
+Across 50 hidden-organism runs at 240 ticks, three histories changed,
+completed assimilations rose from 95 to 96, and completed containments
+remained at 14. Across 50 low-fuel runs at 60 ticks, histories matched
+exactly. Those runs did not generate help responses, so the controlled
+request comparison supplies the evidence for that mechanism.

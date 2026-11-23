@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections import defaultdict, deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from random import Random
 from typing import Literal
 
 from .policy import (
-    Activity, Decision, DecisionView, FoodBelief, Intent, LocalPeer, Room, VISIBLE_EXHAUSTION, choose,
+    Activity, Decision, DecisionView, Disposition, FoodBelief, Intent, LocalPeer, Room,
+    VISIBLE_EXHAUSTION, choose,
 )
 
 MAX_NEED = 12
@@ -159,6 +161,7 @@ class Inhabitant:
     fatigue: int
     meal_threshold: int
     rest_threshold: int
+    disposition: Disposition = field(default_factory=Disposition)
     memory: deque[Observation] = field(default_factory=lambda: deque(maxlen=32))
     food_belief: FoodBelief | None = None
     relationships: dict[str, Relationship] = field(default_factory=dict)
@@ -212,6 +215,7 @@ class Simulation:
 
     def __init__(
         self, seed: int, station: Station = DEFAULT_STATION, *, hidden_organism: bool = False,
+        dispositions: Mapping[str, Disposition] | None = None,
     ) -> None:
         self.seed = seed
         self.station = station
@@ -235,6 +239,13 @@ class Simulation:
             "Anika", "Bram", "Cleo", "Dev", "Edda", "Farid",
             "Greta", "Hana", "Ivo", "Jules", "Kiran", "Lena",
         )
+        overrides = dict(dispositions or {})
+        if unknown := overrides.keys() - set(names):
+            raise ValueError(f"Unknown disposition names: {', '.join(sorted(unknown))}")
+        profiles = Random(seed).sample(
+            [Disposition(cooperation, caution) for cooperation in range(-5, 6)
+             for caution in range(-5, 6)], len(names),
+        )
         duties = [room.name for room in station.rooms if "work" in room.activities]
         self.inhabitants = [
             Inhabitant(
@@ -245,8 +256,9 @@ class Simulation:
                 fatigue=self.random.randrange(7),
                 meal_threshold=self.random.randrange(6, 10),
                 rest_threshold=self.random.randrange(7, 11),
+                disposition=overrides.get(name, profile),
             )
-            for name in names
+            for name, profile in zip(names, profiles)
         ]
         if config:
             self.inhabitants[0].duty_room = config.generator_room
@@ -395,6 +407,7 @@ class Simulation:
             map_rooms=self.station.rooms,
             generator_room=generator,
             peers=tuple(observations),
+            disposition=agent.disposition,
             hunger=agent.hunger,
             fatigue=agent.fatigue,
             meal_threshold=agent.meal_threshold,
