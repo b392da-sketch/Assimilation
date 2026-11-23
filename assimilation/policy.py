@@ -5,6 +5,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from .communication import Assessment, FoodBelief
+
 Activity = Literal["eat", "rest", "work", "wait"]
 VISIBLE_EXHAUSTION = 9
 
@@ -23,15 +25,6 @@ class Intent:
     destination: str | None = None
     recipient: str | None = None
     subject: str | None = None
-
-
-@dataclass(frozen=True)
-class FoodBelief:
-    available: bool
-    observed_at: int
-    sources: tuple[str, ...]
-    confidence: int
-    source_event: int | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +68,10 @@ class DecisionView:
     sleeping: bool
     working: bool
     food_belief: FoodBelief | None
+    food_assessment: Assessment
+    food_question_target: str | None
+    food_reply_target: str | None
+    waiting_for_food_reply: bool
     food_recipients: tuple[str, ...]
     warning_options: tuple[tuple[str, str], ...]
     felt_cold: bool
@@ -241,13 +238,33 @@ def choose(view: DecisionView) -> Decision:
     if action:
         return Decision(action, view.goal, tuple(evaluations))
 
+    assessment = view.food_assessment
+    if view.food_reply_target:
+        intent = Intent("answer_food", recipient=view.food_reply_target)
+        record(evaluations, "answer", "A local peer asked about food.",
+               intent, assessment.trace_ids)
+        return Decision(intent, view.goal, tuple(evaluations))
+    if view.waiting_for_food_reply and not assessment.belief:
+        intent = Intent("wait")
+        record(evaluations, "wait for answer", "The question was asked one tick ago.",
+               intent, assessment.trace_ids)
+        return Decision(intent, view.goal, tuple(evaluations))
+    if (assessment.conflicted and view.food_question_target and not assessment.belief
+            and view.hunger >= view.meal_threshold):
+        intent = Intent("ask_food", recipient=view.food_question_target)
+        reason = (f"Food evidence conflicts. Available support {assessment.available_score}, "
+                  f"unavailable support {assessment.unavailable_score}.")
+        record(evaluations, "ask", reason, intent, assessment.trace_ids)
+        return Decision(intent, view.goal, tuple(evaluations))
+
     belief = view.food_belief
     food_ruled_out = belief is not None and not belief.available and belief.confidence >= 60
     needs = [(view.fatigue - view.rest_threshold, "rest")]
     if not food_ruled_out:
         needs.append((view.hunger - view.meal_threshold, "eat"))
     else:
-        record(evaluations, "eat", f"Food believed unavailable (confidence {belief.confidence}).")
+        record(evaluations, "eat", f"Food believed unavailable (confidence {belief.confidence}).",
+               evidence_event_ids=assessment.trace_ids)
 
     ranked = sorted(needs, key=lambda need: (need[1] != view.goal, -need[0]))
     for urgency, activity in ranked:
@@ -257,7 +274,11 @@ def choose(view: DecisionView) -> Decision:
             reason += " Existing goal takes precedence."
         if urgency >= 0 and target is None:
             reason += " No reachable location."
-        record(evaluations, activity, reason, target)
+        if activity == "eat" and assessment.conflicted:
+            reason += (f" Conflicting food evidence: {assessment.available_score} available, "
+                       f"{assessment.unavailable_score} unavailable.")
+        record(evaluations, activity, reason, target,
+               assessment.trace_ids if activity == "eat" else ())
         if target:
             return Decision(target, activity, tuple(evaluations))
 

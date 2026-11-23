@@ -274,3 +274,73 @@ learning. Controlled tests exercise altered helper selection, promise
 withdrawal, contradictory reports, and evidence rollover. The established
 long-lived refueling setup and the lack of autonomous restocking remain
 limitations.
+
+### Structured communication and conflicting testimony
+
+The first topic is galley stock. A semantic message carries a topic, an
+act (observation, claim, question, answer, doubt, or challenge), optional
+evidence, and a reference to the conversation event it answers or disputes.
+Messages travel between co-located individuals. Observations are local.
+The message ledger records the originating observation and the IDs of
+each transmission. Relays preserve the strength of the individual
+evidence they convey. They don't attribute a combined belief score to
+one origin.
+
+Each inhabitant keeps the twelve most recent distinct origins. Two paths
+from the same observation occupy one slot, with the stronger path retained.
+Direct experience makes earlier claims irrelevant to the current stock
+estimate. More recent reports remain eligible. Testimony is discounted by
+the recipient's trust and food-report credibility. Independent available
+and unavailable weights are summed and capped at 100 per side. A gap of
+less than 20 leaves the belief unresolved. These values are tuning
+assumptions. A newer or more confident claim alone does not erase the
+opposite evidence. With an unresolved conflict and a need to eat, an
+inhabitant can question the most credible local peer they have not asked
+since their last direct observation. They wait one tick if the peer stays
+nearby and can then seek firsthand evidence. Replies are autonomous;
+doubts and challenges are currently resolver actions exercised by tests.
+
+Use `inspect NAME` to see retained evidence, delivery paths, and support
+scores. `decisions NAME` links selected questions and food decisions to
+their evidence and transmissions. `trace ID` follows observation,
+delivery, and reply references. General trust is unaffected by an
+incorrect food report. The separate food credibility score can recover
+with later corroboration.
+
+The test suite covers differing interpretations of the same claim,
+a stale claim held as belief, independent corroboration, repeated
+intermediaries, conflicting evidence, private delivery, challenge
+provenance, and deterministic reply and action resolution. One controlled
+scenario seeds conflicting firsthand histories. The agents then
+autonomously ask, answer, reconsider, move and eat. In the natural
+ration-shortage seed 1, Kiran asks Ivo at tick 368. The answer leaves the
+two support scores tied. Kiran checks the galley at tick 372 and revises
+the belief from firsthand evidence.
+
+#### Comparison with PR #7
+
+Action sequences matched in three ordinary ten-day runs, 12 low-fuel
+runs, and 50 hidden-organism runs. All 12 ration-shortage runs changed.
+Use `python3 -m assimilation.batch --multiday --seeds 12 --ticks 800`
+to reproduce the ration-shortage configuration. The comparison checked
+food accounting and event references and found identical survival counts.
+
+| Ration-shortage outcome, seeds 1–12, 800 ticks | PR #7 | This slice |
+| --- | ---: | ---: |
+| Reports | 542 | 564 |
+| Questions / answers | 0 / 0 | 68 / 64 |
+| Moves | 7,797 | 7,639 |
+| Meals | 864 | 864 |
+
+Questions and delays are expected when evidence conflicts. Fewer moves
+and more reports are secondary effects of revised decisions and group
+timing. None of the naturally sampled answers turned an unresolved
+conflict directly into a settled belief. The controlled scenario
+demonstrates that path. No behavior was tuned to hit a target outcome.
+
+This model covers one topic and bounded evidence. It has no general
+model of deception, no temporal decay between observations, and no
+sub-tick conversations. Strong support on both sides can saturate and
+leave a tie. Older information can be dropped after the evidence budget
+fills. Notion was unavailable as a connected source for this slice, so
+the repository specification and the supplied requirements were used.
