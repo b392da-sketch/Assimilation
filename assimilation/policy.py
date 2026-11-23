@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from .defense import DangerCue, DistressCue
 from .communication import Assessment, FoodBelief, Verification
 
 Activity = Literal["eat", "rest", "work", "wait"]
@@ -92,6 +93,9 @@ class DecisionView:
     encounter_target: str | None
     can_start_encounter: bool
     known_converts: frozenset[str]
+    health: int
+    danger: DangerCue | None
+    distress: DistressCue | None
 
 
 @dataclass(frozen=True)
@@ -161,6 +165,49 @@ def power_response(view: DecisionView, rooms: dict[str, Room]) -> Intent | None:
             return Intent("request_help", recipient=peer.name)
     step = first_step(rooms, view.room, lambda room: room.name == generator)
     return Intent("move", step) if step else None
+
+
+def respond_to_distress(view: DecisionView) -> Decision | None:
+    cue = view.distress
+    if cue is None or cue.tick != view.tick or view.health <= 30:
+        return None
+    if view.fatigue >= view.rest_threshold or view.disposition.cooperativeness < view.disposition.caution:
+        return None
+    room = next(room for room in view.map_rooms if room.name == view.room)
+    if cue.room not in room.neighbors:
+        return None
+    intent = Intent("answer_distress", destination=cue.room)
+    return Decision(intent, view.goal, (Evaluation(
+        "answer distress", "A nearby call was heard, and capacity and disposition favor helping.",
+        intent, (cue.event_id,),
+    ),))
+
+
+def defensive_decision(view: DecisionView, exits: tuple[str, ...]) -> Decision:
+    cue = view.danger
+    assert cue is not None
+    escape = Intent("escape_danger", destination=exits[0]) if exits else None
+    resistance = Intent("resist_danger") if view.health > 30 else None
+    call = Intent("call_for_help")
+    mobile = view.health > 30 or view.tick % 2 == 0
+    if escape and mobile and (view.disposition.caution >= 0 or view.fatigue < VISIBLE_EXHAUSTION):
+        selected = escape
+        reason = "A known exit and current mobility favor leaving."
+    elif resistance and (not exits or view.disposition.cooperativeness < 0):
+        selected = resistance
+        reason = "Limited escape options and current capacity favor resisting."
+    else:
+        selected = call
+        reason = "Current mobility, fatigue or disposition favors calling for help."
+    evidence = (cue.event_id,)
+    options = (
+        Evaluation("escape", "A neighboring exit is known." if escape else "No known exit.", escape, evidence),
+        Evaluation("resist", "Current health permits an attempt." if resistance else "Health limits resistance.",
+                   resistance, evidence),
+        Evaluation("call for help", "A call may reach someone nearby.", call, evidence),
+        Evaluation("defensive response", reason, selected, evidence),
+    )
+    return Decision(selected, view.goal, options)
 
 
 def immediate_action(
@@ -240,6 +287,8 @@ def record(
 def choose(view: DecisionView) -> Decision:
     rooms = {room.name: room for room in view.map_rooms}
     evaluations: list[Evaluation] = []
+    if view.danger and not view.sleeping:
+        return defensive_decision(view, rooms[view.room].neighbors)
     action = immediate_action(view, rooms, evaluations)
     if action:
         return Decision(action, view.goal, tuple(evaluations))

@@ -62,6 +62,8 @@ def inspect_inhabitant(simulation: Simulation, name: str) -> dict:
         "hunger": agent.hunger,
         "fatigue": agent.fatigue,
         "health": agent.health,
+        "immediate_danger": asdict(agent.danger) if agent.danger else None,
+        "heard_distress": asdict(agent.distress) if agent.distress else None,
         "disposition": asdict(agent.disposition),
         "alive": agent.alive,
         "goal": agent.goal,
