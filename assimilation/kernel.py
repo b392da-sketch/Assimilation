@@ -8,6 +8,9 @@ from dataclasses import dataclass, field, replace
 from random import Random
 from typing import Literal
 
+from .allegations import (
+    CONVERSATION_TICKS, Accusation, AccusationView, ExaminationRequest, Reconsideration, SuspicionReport,
+)
 from .communication import (
     QUESTION_COOLDOWN, QUESTION_TIMEOUT, VERIFICATION_COOLDOWN, VERIFICATION_TIMEOUT,
     Assessment, Evidence, Message, Verification, assess, retain,
@@ -112,14 +115,6 @@ class Observation:
 
 
 @dataclass(frozen=True)
-class SuspicionReport:
-    witness: str
-    subject: str
-    observed_at: int
-    concern: int
-
-
-@dataclass(frozen=True)
 class HeardFoodReport:
     event_id: int
     belief: FoodBelief
@@ -194,6 +189,14 @@ class Inhabitant:
     felt_cold: bool = False
     checked_generator: bool = False
     suspicion: dict[str, int] = field(default_factory=dict)
+    last_cold_distress_event: int | None = None
+    accusations_received: dict[str, Accusation] = field(default_factory=dict)
+    accusations_made: dict[str, Accusation] = field(default_factory=dict)
+    accusation_responses: dict[str, int] = field(default_factory=dict)
+    examination_requests: dict[str, ExaminationRequest] = field(default_factory=dict)
+    requested_examination_for: dict[str, int] = field(default_factory=dict)
+    examination_consents: dict[str, tuple[int, int]] = field(default_factory=dict)
+    reconsiderations: dict[str, Reconsideration] = field(default_factory=dict)
     witnessed_concerns: dict[str, SuspicionReport] = field(default_factory=dict)
     heard_concerns: dict[tuple[str, str], SuspicionReport] = field(default_factory=dict)
     sent_concerns: dict[tuple[str, str], int] = field(default_factory=dict)
@@ -221,12 +224,23 @@ class Inhabitant:
     def concern_about(self, subject: str) -> int:
         if self.examinations.get(subject) == "clear":
             return 0
+        relief = self.reconsiderations.get(subject)
+
+        def adjusted(report: SuspicionReport, score: int) -> int:
+            if relief and report.origin_event == relief.origin_event:
+                return max(0, score - relief.reduction)
+            return score
+
+        firsthand = self.witnessed_concerns.get(subject)
+        direct = self.suspicion.get(subject, 0)
+        if firsthand:
+            direct = adjusted(firsthand, direct)
         reported = (
-            report.concern * self.relationships[report.witness].trust // 100
+            adjusted(report, report.concern * self.relationships[report.witness].trust // 100)
             for report in self.heard_concerns.values()
             if report.subject == subject
         )
-        return max(self.suspicion.get(subject, 0), max(reported, default=0))
+        return max(direct, max(reported, default=0))
 
 
 @dataclass(frozen=True)
@@ -557,6 +571,7 @@ class Simulation:
             health=agent.health,
             danger=agent.danger,
             distress=agent.distress,
+            accusation_view=self.perceive_accusations(agent, available_peers),
         )
 
     def decide(self, agent: Inhabitant) -> Intent:
@@ -566,6 +581,48 @@ class Simulation:
         decision = choose(self.perceive(agent))
         agent.goal = decision.goal
         return decision
+
+    def perceive_accusations(self, agent: Inhabitant, peers: list[Inhabitant]) -> AccusationView:
+        names = {peer.name for peer in peers}
+        accusation = next((
+            item for name, item in agent.accusations_received.items()
+            if name in names and self.tick < item.expires_at
+        ), None)
+        invitation = next((
+            item for name, item in agent.examination_requests.items()
+            if name in names and self.tick < item.expires_at
+        ), None)
+        confrontation = None
+        request = None
+        consent = None
+        for peer in peers:
+            name = peer.name
+            report = agent.witnessed_concerns.get(name)
+            concern = agent.concern_about(name)
+            if not report or report.origin_event is None or name in agent.examinations:
+                continue
+            agreement = agent.examination_consents.get(name)
+            if agreement and self.tick < agreement[1]:
+                consent = consent or (name, agreement[0])
+            made = agent.accusations_made.get(name)
+            if concern >= 20 and (made is None or report.origin_event != made.report.origin_event):
+                confrontation = confrontation or (name, report.origin_event, concern)
+            elif made and made.report.origin_event == report.origin_event and concern >= 10:
+                response = agent.accusation_responses.get(name)
+                if ((response or self.tick >= made.expires_at)
+                        and agent.requested_examination_for.get(name) != made.event_id):
+                    request = request or (name, response or made.event_id)
+        return AccusationView(
+            accusation=accusation,
+            can_explain_cold=bool(accusation and
+                                  agent.last_cold_distress_event == accusation.report.origin_event),
+            accuser_trust=agent.relationships[accusation.accuser].trust if accusation else 0,
+            examination_request=invitation,
+            examiner_trust=agent.relationships[invitation.examiner].trust if invitation else 0,
+            confrontation=confrontation,
+            invitation=request,
+            consent=consent,
+        )
 
     def can_share(self, agent: Inhabitant, peer: Inhabitant) -> bool:
         belief = agent.food_belief
@@ -585,7 +642,7 @@ class Simulation:
             agent.room == peer.room
             and not peer.sleep_until
             and peer.name not in (agent.name, report.subject)
-            and previous < report.observed_at
+            and previous < (report.origin_event or report.observed_at)
         )
 
     def warn(self, agent: Inhabitant, intent: Intent) -> bool:
@@ -593,11 +650,12 @@ class Simulation:
         report = agent.witnessed_concerns.get(intent.subject)
         if peer is None or report is None or not self.can_warn(agent, peer, report):
             return False
-        agent.sent_concerns[peer.name, report.subject] = report.observed_at
+        agent.sent_concerns[peer.name, report.subject] = report.origin_event or report.observed_at
         peer.heard_concerns[agent.name, report.subject] = report
         self.record(
             agent, "warn", agent.room, recipient=peer.name, subject=report.subject,
-            concern=report,
+            concern=report, message=Message("suspicion report", "safety", suspicion=report),
+            causes=(report.origin_event,) if report.origin_event else (),
         )
         return True
 
@@ -925,6 +983,10 @@ class Simulation:
             return self.refuel(agent)
         elif action == "assimilate":
             return self.attempt_assimilation(agent, intent.recipient)
+        elif action in ("accuse", "explain_accusation", "question_accusation",
+                        "request_examination", "consent_examination", "refuse_examination",
+                        "cooperative_exam"):
+            return self.resolve_accusation(agent, intent)
         elif action in ("examine", "contain"):
             return self.resolve_investigation(agent, intent)
         elif action not in origin.activities:
@@ -948,6 +1010,7 @@ class Simulation:
             if shivering:
                 agent.showed_cold_distress = True
                 self.record(agent, action, origin.name, visible_as="uneasy_encounter")
+                agent.last_cold_distress_event = len(self.history)
                 return True
         elif action == "work":
             if self.tick < agent.work_until:
@@ -965,7 +1028,123 @@ class Simulation:
                     encounter.interruption = "Another inhabitant entered the encounter room."
         return True
 
-    def resolve_investigation(self, agent: Inhabitant, intent: Intent) -> bool:
+    def resolve_accusation(self, agent: Inhabitant, intent: Intent) -> bool:
+        name = intent.subject or intent.recipient
+        peer = self.agents_by_name.get(name)
+        if (peer is None or peer is agent or peer.room != agent.room
+                or not peer.alive or peer.contained or peer.sleep_until):
+            return False
+        action = intent.action
+        event_id = len(self.history) + 1
+        if action == "accuse":
+            report = agent.witnessed_concerns.get(peer.name)
+            prior = agent.accusations_made.get(peer.name)
+            if (report is None or report.origin_event is None or agent.concern_about(peer.name) < 20
+                    or prior and prior.report.origin_event == report.origin_event):
+                return False
+            accusation = Accusation(agent.name, report, event_id, self.tick + CONVERSATION_TICKS)
+            self.record(
+                agent, action, agent.room, subject=peer.name, concern=report,
+                causes=(report.origin_event,),
+                message=Message("accusation", "safety", suspicion=report,
+                                reason="The speaker suspects infection based on a firsthand incident."),
+            )
+            agent.accusations_made[peer.name] = accusation
+            agent.accusation_responses.pop(peer.name, None)
+            peer.accusations_received[agent.name] = accusation
+            for listener, _ in self.history[-1].observations:
+                if listener not in (agent.name, peer.name):
+                    self.agents_by_name[listener].heard_concerns[agent.name, peer.name] = report
+            return True
+        if action in ("explain_accusation", "question_accusation"):
+            accusation = agent.accusations_received.get(peer.name)
+            if accusation is None or self.tick >= accusation.expires_at:
+                return False
+            report = accusation.report
+            explaining = action == "explain_accusation"
+            if explaining and agent.last_cold_distress_event != report.origin_event:
+                return False
+            reason = ("The accused reports being exhausted by cold during the incident."
+                      if explaining else "The accused asks what supports the allegation.")
+            self.record(
+                agent, action, agent.room, subject=peer.name, causes=(accusation.event_id,),
+                message=Message("explanation" if explaining else "question evidence", "safety",
+                                reply_to=accusation.event_id, reason=reason, suspicion=report),
+            )
+            del agent.accusations_received[peer.name]
+            peer.accusation_responses[agent.name] = event_id
+            if explaining:
+                self.reconsider_explanation(agent, report, event_id)
+            return True
+        if action == "request_examination":
+            made = agent.accusations_made.get(peer.name)
+            current = agent.witnessed_concerns.get(peer.name)
+            if (made is None or agent.requested_examination_for.get(peer.name) == made.event_id
+                    or current is None or current.origin_event != made.report.origin_event
+                    or peer.name in agent.examinations
+                    or agent.concern_about(peer.name) < 10):
+                return False
+            response = agent.accusation_responses.get(peer.name)
+            if response is None and self.tick < made.expires_at:
+                return False
+            agent.requested_examination_for[peer.name] = made.event_id
+            peer.examination_requests[agent.name] = ExaminationRequest(
+                agent.name, event_id, self.tick + CONVERSATION_TICKS,
+            )
+            self.record(agent, action, agent.room, recipient=peer.name, causes=(response or made.event_id,),
+                        message=Message("examination request", "safety", reply_to=response or made.event_id))
+            return True
+        if action == "cooperative_exam":
+            consent = agent.examination_consents.get(peer.name)
+            if consent is None or self.tick >= consent[1]:
+                return False
+            completed = self.resolve_investigation(agent, Intent("examine", subject=peer.name), consent[0])
+            if completed:
+                del agent.examination_consents[peer.name]
+            return completed
+
+        request = agent.examination_requests.get(peer.name)
+        if request is None or self.tick >= request.expires_at:
+            return False
+        del agent.examination_requests[peer.name]
+        consented = action == "consent_examination"
+        if consented:
+            peer.examination_consents[agent.name] = (event_id, self.tick + CONVERSATION_TICKS)
+        self.record(
+            agent, action, agent.room, recipient=peer.name, causes=(request.event_id,),
+            message=Message("examination consent" if consented else "examination refusal",
+                            "safety", reply_to=request.event_id),
+        )
+        return True
+
+    def reconsider_explanation(self, subject: Inhabitant, report: SuspicionReport, event_id: int) -> None:
+        for name, _ in self.history[event_id - 1].observations:
+            if name == subject.name:
+                continue
+            observer = self.agents_by_name[name]
+            firsthand = observer.witnessed_concerns.get(subject.name)
+            received = observer.heard_concerns.get((report.witness, subject.name))
+            if not any(item and item.origin_event == report.origin_event for item in (firsthand, received)):
+                continue
+            previous = observer.reconsiderations.get(subject.name)
+            if previous and previous.origin_event == report.origin_event:
+                continue
+            trust = observer.relationships[subject.name].trust
+            threshold = 60 + 3 * observer.disposition.caution
+            reduction = (15 if observer.felt_cold else 10) if trust >= threshold else 0
+            before = observer.concern_about(subject.name)
+            observer.reconsiderations[subject.name] = Reconsideration(report.origin_event, event_id, reduction)
+            after = observer.concern_about(subject.name)
+            self.record(
+                observer, "concern_reconsidered" if after < before else "concern_maintained",
+                observer.room, recipient=observer.name, subject=subject.name, causes=(event_id,),
+                reason=(f"Trust {trust}, threshold {threshold}, own cold cue {observer.felt_cold}. "
+                        f"Concern changed from {before} to {after}."),
+            )
+
+    def resolve_investigation(
+        self, agent: Inhabitant, intent: Intent, consent_event: int | None = None,
+    ) -> bool:
         subject = self.agents_by_name.get(intent.subject)
         if (subject is None or subject is agent or not subject.alive or subject.contained
                 or subject.room != agent.room
@@ -989,6 +1168,7 @@ class Simulation:
             self.record(
                 agent, f"examination_{result}",
                 agent.room, recipient=agent.name, subject=subject.name,
+                causes=(consent_event,) if consent_event else (),
             )
             return True
         if (agent.examinations.get(subject.name) != "anomaly"
@@ -1078,6 +1258,14 @@ class Simulation:
                 target.offered_verification = None
                 target.last_food_question = None
                 target.suspicion.clear()
+                target.last_cold_distress_event = None
+                target.accusations_received.clear()
+                target.accusations_made.clear()
+                target.accusation_responses.clear()
+                target.examination_requests.clear()
+                target.requested_examination_for.clear()
+                target.examination_consents.clear()
+                target.reconsiderations.clear()
                 target.witnessed_concerns.clear()
                 target.heard_concerns.clear()
                 target.sent_concerns.clear()
@@ -1236,7 +1424,7 @@ class Simulation:
                     strength = min(100, observer.suspicion.get(agent.name, 0) + 20)
                     observer.suspicion[agent.name] = strength
                     observer.witnessed_concerns[agent.name] = SuspicionReport(
-                        observer.name, agent.name, self.tick, strength,
+                        observer.name, agent.name, self.tick, strength, event_id,
                     )
             if stock_observed:
                 available = message.content.available

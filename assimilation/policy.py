@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from .allegations import AccusationView
 from .defense import DangerCue, DistressCue
 from .communication import Assessment, FoodBelief, Verification
 
@@ -96,6 +97,7 @@ class DecisionView:
     health: int
     danger: DangerCue | None
     distress: DistressCue | None
+    accusation_view: AccusationView
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,48 @@ def defensive_decision(view: DecisionView, exits: tuple[str, ...]) -> Decision:
     return Decision(selected, view.goal, options)
 
 
+def accusation_action(view: DecisionView, evaluations: list[Evaluation]) -> Intent | None:
+    social = view.accusation_view
+    if social.examination_request:
+        request = social.examination_request
+        cooperation = 2 * view.disposition.cooperativeness
+        score = social.examiner_trust + cooperation - max(0, view.disposition.caution)
+        willing = score >= 60 and view.fatigue < view.rest_threshold
+        reason = (
+            f"Consent score {score}. Trust {social.examiner_trust}, cooperation {cooperation}, "
+            f"caution {view.disposition.caution}. Fatigue {view.fatigue} must be below "
+            f"{view.rest_threshold}."
+        )
+        action = "consent_examination" if willing else "refuse_examination"
+        return record(evaluations, "answer examination request", reason,
+                      Intent(action, recipient=request.examiner), (request.event_id,))
+    if social.accusation:
+        accusation = social.accusation
+        willing = social.accuser_trust + view.disposition.cooperativeness >= 50
+        explain = social.can_explain_cold and willing and view.fatigue < view.rest_threshold
+        reason = (
+            f"Own cold-distress evidence: {social.can_explain_cold}. "
+            f"Trust {social.accuser_trust}, cooperativeness {view.disposition.cooperativeness}, "
+            f"fatigue {view.fatigue}, rest threshold {view.rest_threshold}."
+        )
+        action = "explain_accusation" if explain else "question_accusation"
+        return record(evaluations, "respond to accusation", reason,
+                      Intent(action, recipient=accusation.accuser), (accusation.event_id,))
+    if social.consent:
+        peer, consent = social.consent
+        return record(evaluations, "cooperative examination", "The local inhabitant consented.",
+                      Intent("cooperative_exam", subject=peer), (consent,))
+    if social.confrontation:
+        peer, evidence, concern = social.confrontation
+        return record(evaluations, "confront", f"Firsthand concern reached {concern}.",
+                      Intent("accuse", subject=peer), (evidence,))
+    if social.invitation:
+        peer, evidence = social.invitation
+        return record(evaluations, "request examination", "Concern remains after the confrontation.",
+                      Intent("request_examination", subject=peer), (evidence,))
+    return None
+
+
 def immediate_action(
     view: DecisionView, rooms: dict[str, Room], evaluations: list[Evaluation],
 ) -> Intent | None:
@@ -222,10 +266,11 @@ def immediate_action(
     record(evaluations, "continue encounter", "No pending encounter.")
     for peer in view.peers:
         if (peer.examination == "anomaly" and not peer.contained
-                and peer.visibly_exhausted and view.fatigue < VISIBLE_EXHAUSTION):
-            return record(evaluations, "contain", "Local evidence and fatigue permit containment.",
+                and peer.visibly_exhausted and view.fatigue < VISIBLE_EXHAUSTION
+                and view.disposition.cooperativeness >= -2):
+            return record(evaluations, "contain", "The anomaly, physical conditions and willingness permit restraint.",
                           Intent("contain", subject=peer.name))
-    record(evaluations, "contain", "No local peer met the evidence and fatigue conditions.")
+    record(evaluations, "contain", "The evidence, physical conditions or willingness did not support restraint.")
     exits = rooms[view.room].neighbors
     caution = view.disposition.caution
     threshold = 32 - (caution + 5) * 4 // 10
@@ -235,12 +280,9 @@ def immediate_action(
         return record(evaluations, "avoid", evidence,
                       Intent("move", exits[0]))
     record(evaluations, "avoid", evidence if exits else evidence + " No exit is known.")
-    for peer in view.peers:
-        if (peer.witnessed_at is not None and peer.examination is None and not peer.contained
-                and view.tick >= peer.witnessed_at + 2):
-            return record(evaluations, "examine", "Local firsthand evidence is at least two ticks old.",
-                          Intent("examine", subject=peer.name))
-    record(evaluations, "examine", "No local peer met the firsthand evidence conditions.")
+    social = accusation_action(view, evaluations)
+    if social:
+        return social
     if view.generator_room and view.requester and not view.help_accepted:
         cooperation = 2 * view.disposition.cooperativeness
         hunger_cost = 2 * max(0, view.hunger - view.meal_threshold)

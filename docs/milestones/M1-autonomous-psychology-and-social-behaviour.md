@@ -465,3 +465,91 @@ without establishing a target conversion rate. No calls or resistance
 occurred in this natural batch. The controlled cases exercise those
 options under constrained mobility or room layouts. D09 accusations and
 social reconsideration are the separate next audit assignment.
+
+### D09 audit correction — Accusations and independent reconsideration
+
+An inhabitant may publicly confront a co-located, awake peer about a
+firsthand incident. Private suspicion and privately shared warnings
+continue to exist. A warning can reach another observer without making
+the subject aware. A confrontation makes the allegation known to the
+subject and gives local witnesses an account, with its original event
+reference. Multiple deliveries of the same incident do not add to concern.
+Separate original incidents retain distinct IDs. The current estimator
+uses the strongest applicable source, and autonomous warning relays are
+still limited to firsthand accounts.
+
+An accused inhabitant can explain cold distress they remember from the
+specific incident, or question the accusation. Their decision uses trust
+in the accuser, cooperation and fatigue. The same policy runs for human
+and organism controllers. Conversion clears the prior human's active
+accusations, personal incident context, and learned judgments.
+
+A listener evaluates the explanation using their own concern, trust in
+the speaker, caution, and felt cold. If the explanation meets the
+listener's trust threshold, it reduces concern tied to that incident.
+It does not remove independent evidence or reliably establish innocence.
+Recipients can independently consent to or refuse a subsequent private
+examination request. Refusal carries no evidential weight. Autonomous
+examinations use consent, and their results remain fallible. The existing
+low-level examination resolver remains available to controlled fixtures.
+Restraint is a separate action that requires an examination anomaly,
+physical conditions, and the policy's willingness to attempt it.
+
+The observer exposes pending accusations, examination requests, concern
+scores, and reconsideration details. Its causal trace includes the
+original event, accusation, response, private judgment, and any later
+request, consent and examination. Decision records include the reasons
+that were actually evaluated. An old accusation can expire without a
+response. This slice implements one contextual explanation and questioning.
+Rumours do not trigger direct self-awareness, and longer exchanges,
+explicit withdrawal, and group decisions remain outside this prototype.
+
+#### Controlled autonomous demonstration
+
+Run `python3 -m unittest discover -s tests -p test_accusations.py -v`.
+The fixture starts with Bram exhausted in a cold room and a technician
+able to restore power. Subsequent actions occur through the seeded
+simulation. Bram's cold distress at event 2 raises suspicion. Cleo and
+Dev confront him when he wakes. In seed 1, `trace 26` follows event 22
+(Cleo's accusation), event 25 (Bram's explanation), and event 26 (Cleo
+reducing concern from 20 to 10). Dev observes that same explanation
+and keeps his concern at 20 in event 27. The two reactions arise from
+their different trust in Bram. Cleo still asks for an examination,
+Bram consents, and the examination is clear. Neither cooperation nor
+refusal automatically classifies the subject. The fixture checks replay
+of the history, decision records and RNG state.
+
+#### Comparison with merged PR #10
+
+The 80 paired runs included three ordinary ten-day runs, twelve low-fuel
+runs at 60 ticks, twelve ration-shortage runs at 800 ticks, fifty
+hidden-organism runs at 240 ticks, and three controlled cold-distress
+runs at 50 ticks. Ordinary, low-fuel and ration-shortage action sequences
+matched. All pairs preserved survival counts. Resource accounting,
+encounter accounting, event references, and local accusation and
+reconsideration recipients passed. No natural seeded run produced the
+complete false-accusation and explanation sequence. The controlled
+runs demonstrate it with autonomous decisions.
+
+| Outcome | PR #10 | D09 |
+| --- | ---: | ---: |
+| Hidden-organism confrontations | 0 | 176 |
+| Hidden-organism questions from the accused | 0 | 142 |
+| Hidden-organism examination requests | 0 | 94 |
+| Hidden-organism consents / refusals | 0 / 0 | 37 / 35 |
+| Hidden-organism examinations / containments | 120 / 17 | 30 / 6 |
+| Hidden-organism warnings | 582 | 680 |
+| Hidden-organism assimilation attempts / completed / interrupted | 441 / 48 / 393 | 496 / 54 / 442 |
+| Controlled false accusations / explanations | 0 / 0 | 6 / 6 |
+| Controlled reconsidered / maintained judgments | 0 / 0 | 3 / 3 |
+| Controlled clear / inconclusive examinations | 0 / 6 | 6 / 0 |
+
+Hidden-organism histories changed for 45 seeds. Added conversations and
+a consent step consume opportunities that formerly went directly to an
+examination. Fewer examinations and restraints leave more opportunities
+for repeated encounters. The controlled examinations often occur later,
+after the room warms, so they can return clear where the earlier baseline
+examinations were inconclusive. These outcomes describe the tested rules
+and conditions. They are not targets for tuning. This closes the D09
+implementation assignment for review and leaves M1 acceptance to a
+separate audit.

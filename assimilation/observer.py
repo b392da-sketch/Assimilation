@@ -78,6 +78,12 @@ def inspect_inhabitant(simulation: Simulation, name: str) -> dict:
         "witnessed_concerns": [asdict(report) for report in agent.witnessed_concerns.values()],
         "heard_concerns": [asdict(report) for report in agent.heard_concerns.values()],
         "examinations": dict(agent.examinations),
+        "accusations_received": [asdict(item) for item in agent.accusations_received.values()
+                                 if simulation.tick < item.expires_at],
+        "reconsiderations": {subject: asdict(item) for subject, item in agent.reconsiderations.items()},
+        "examination_requests": [asdict(item) for item in agent.examination_requests.values()
+                                 if simulation.tick < item.expires_at],
+        "concerns": {peer: score for peer in agent.relationships if (score := agent.concern_about(peer))},
         "memory": [asdict(observation) for observation in agent.memory],
     }
 
