@@ -30,6 +30,7 @@ def evaluate(seed: int, ticks: int, hidden_organism: bool) -> dict:
         agent.room not in simulation.rooms
         or not 0 <= agent.hunger <= MAX_NEED
         or not 0 <= agent.fatigue <= MAX_NEED
+        or not 0 <= agent.health <= 100
         for agent in simulation.inhabitants
     )
     invalid_events = sum(
@@ -43,6 +44,8 @@ def evaluate(seed: int, ticks: int, hidden_organism: bool) -> dict:
         "human": len(names) - len(organisms),
         "organism": len(organisms),
         "contained": sum(agent.contained for agent in simulation.inhabitants),
+        "human_alive": sum(agent.alive and agent.name not in organisms for agent in simulation.inhabitants),
+        "organism_alive": sum(simulation.agents_by_name[body].alive for body in organisms),
     }
     return {
         "scenario": "hidden-organism" if hidden_organism else "ordinary",

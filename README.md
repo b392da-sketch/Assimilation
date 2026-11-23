@@ -108,7 +108,7 @@ state remain attached to the body as a prototype simplification. A witness
 can perceive an uneasy encounter and grow suspicious. Objective outcomes and
 lineage appear in the omniscient observer output only. Recovery delays the
 next attempt. These experimental rules cover conversion and interruption.
-Organism injury and removal remain open.
+An organism depends on its body's health and can die from prolonged exposure or deprivation.
 
 A witness can privately warn another inhabitant in the same room. The report
 preserves who witnessed the encounter and when. The listener weighs it by
@@ -116,18 +116,27 @@ trust and can leave a shared room if concern is high enough. Reports never
 grant access to objective assimilation status. This slice allows firsthand
 reports only.
 
-Severe cold distress can give a witness the same initial impression as an
-uneasy encounter. After two ticks, a witness can examine the subject if
-they meet again. A clear examination resolves that witness's concern.
-An anomalous result allows the examiner to contain the subject if they are
-still together. Containment stops that inhabitant from acting while the
-rest of the station continues. The examination is a deterministic
-placeholder, and containment has no release procedure.
+Severe cold distress can raise suspicion. After two ticks, a firsthand
+witness can examine the subject if they meet again. Cold and exhaustion can
+mask a result. A recovering organism can show an anomaly, and a quiescent
+organism can pass the examination. The prototype uses an abstract signal
+with no real-world diagnostic analogue.
 
-Use hidden-organism seed 2 to observe autonomous examination and
-containment. Seed 19 demonstrates successful assimilation. Low-fuel seed
-1 at 240 ticks demonstrates clear examinations in a station with no
-organism.
+An anomaly allows a less fatigued examiner to start containing a visibly
+exhausted subject. Both must stay in the same room and remain eligible for a
+second action on the next tick. Departure cancels the attempt. Containment
+prevents action but does not itself cause death. There is no release
+procedure.
+
+## Survival clock
+
+Each tick represents ten simulated minutes. The prototype applies cold
+injury after three continuous hours of exposure and deprivation damage
+after a full day at maximum hunger. Severe impairment slows movement.
+Warmth and food permit gradual recovery. A body at zero health stops acting.
+An organism dies with its body, and the station clock keeps advancing.
+These are gameplay thresholds. Work, hunger and resupply still need tuning
+before long runs can represent realistic station life.
 
 ## Camera modes
 

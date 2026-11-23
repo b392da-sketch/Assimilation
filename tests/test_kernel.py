@@ -278,29 +278,74 @@ class KernelTests(unittest.TestCase):
         self.assertFalse(simulation.resolve(examiner, examination))
         simulation.tick = 2
         self.assertFalse(simulation.resolve(absent, examination))
+        subject.felt_cold = False
         self.assertTrue(simulation.resolve(examiner, examination))
         self.assertEqual(simulation.history[-1].action, "examination_clear")
         self.assertEqual(examiner.concern_about(subject.name), 0)
         self.assertFalse(simulation.resolve(examiner, Intent("contain", subject=subject.name)))
 
-    def test_autonomous_containment_leaves_station_running(self):
+    def test_examination_is_inconclusive_during_cold_stress(self):
+        simulation = Simulation(1)
+        subject, examiner, *_ = simulation.inhabitants
+        subject.felt_cold = True
+        subject.fatigue = 12
+        self.assertTrue(simulation.resolve(subject, Intent("rest")))
+        simulation.tick = 2
+        self.assertTrue(simulation.resolve(examiner, Intent("examine", subject=subject.name)))
+        self.assertEqual(examiner.examinations[subject.name], "inconclusive")
+        self.assertGreater(examiner.concern_about(subject.name), 0)
+        self.assertFalse(simulation.resolve(examiner, Intent("contain", subject=subject.name)))
+
+    def test_examination_can_miss_a_quiescent_organism(self):
         simulation = Simulation(2, hidden_organism=True)
-        for _ in range(240):
-            simulation.advance()
-        event = next(event for event in simulation.history if event.action == "contained")
-        target = simulation.agents_by_name[event.subject]
-        self.assertTrue(target.contained)
+        target = simulation.agents_by_name[next(iter(simulation.organisms))]
+        examiner = next(agent for agent in simulation.inhabitants if agent is not target)
+        simulation.record(target, "assimilation_started", target.room, visible_as="uneasy_encounter")
+        simulation.tick = 2
+        self.assertTrue(simulation.resolve(examiner, Intent("examine", subject=target.name)))
+        self.assertEqual(examiner.examinations[target.name], "clear")
         self.assertIn(target.name, simulation.organisms)
+
+    def test_containment_requires_two_consecutive_actions_and_can_be_interrupted(self):
+        simulation = Simulation(2, hidden_organism=True)
+        target = simulation.agents_by_name[next(iter(simulation.organisms))]
+        examiner = next(agent for agent in simulation.inhabitants if agent is not target)
+        simulation.record(target, "assimilation_started", target.room, visible_as="uneasy_encounter")
+        simulation.tick = 2
+        simulation.organisms[target.name].recovery_until = 5
+        target.fatigue, examiner.fatigue = 10, 0
+        self.assertTrue(simulation.resolve(examiner, Intent("examine", subject=target.name)))
+        self.assertEqual(examiner.examinations[target.name], "anomaly")
+        restraint = Intent("contain", subject=target.name)
+        self.assertTrue(simulation.resolve(examiner, restraint))
+        self.assertFalse(target.contained)
+        self.assertTrue(simulation.resolve(target, Intent("move", "commons")))
+        self.assertIsNone(examiner.containment_attempt)
+        simulation.tick = 3
+        self.assertTrue(simulation.resolve(target, Intent("move", "quarters")))
+        self.assertTrue(simulation.resolve(examiner, restraint))
+        self.assertFalse(target.contained)
+        simulation.tick = 4
+        self.assertTrue(simulation.resolve(examiner, restraint))
+        self.assertTrue(target.contained)
+        self.assertTrue(target.alive)
         self.assertFalse(simulation.resolve(target, Intent("wait")))
-        self.assertFalse(any(
-            item.actor == target.name and item.tick > event.tick
-            for item in simulation.history
-        ))
-        self.assertTrue(any(
-            item.action == "work" and item.tick > event.tick
-            for item in simulation.history
-        ))
-        self.assertEqual(simulation.tick, 240)
+        simulation.advance()
+        self.assertEqual(simulation.tick, 5)
+
+    def test_prolonged_deprivation_can_kill_a_contained_organism(self):
+        station = replace(DEFAULT_STATION, initial_food=0)
+        simulation = Simulation(2, station, hidden_organism=True)
+        target = simulation.agents_by_name[next(iter(simulation.organisms))]
+        target.contained = True
+        for _ in range(270):
+            simulation.advance()
+        self.assertFalse(target.alive)
+        self.assertTrue(target.contained)
+        self.assertFalse(simulation.resolve(target, Intent("wait")))
+        deaths = [event for event in simulation.history if event.action == "organism_died"]
+        self.assertEqual([event.actor for event in deaths], [target.name])
+        self.assertEqual(simulation.tick, 270)
 
     def test_long_run_preserves_resource_and_state_bounds(self):
         simulation = self.run_seed(42, 500)

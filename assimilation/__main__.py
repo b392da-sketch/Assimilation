@@ -65,6 +65,7 @@ def main() -> None:
             {
                 "identity": organism.identity, "parent": organism.parent, "body": organism.body,
                 "contained": simulation.agents_by_name[organism.body].contained,
+                "alive": simulation.agents_by_name[organism.body].alive,
             }
             for organism in simulation.organisms.values()
         ]

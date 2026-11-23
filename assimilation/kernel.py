@@ -10,6 +10,10 @@ from typing import Literal
 
 Activity = Literal["eat", "rest", "work", "wait"]
 MAX_NEED = 12
+VISIBLE_EXHAUSTION = 9
+MINUTES_PER_TICK = 10
+STARVATION_TICKS = 24 * 60 // MINUTES_PER_TICK
+COLD_INJURY_TICKS = 3 * 60 // MINUTES_PER_TICK
 
 
 @dataclass(frozen=True)
@@ -180,12 +184,20 @@ class Inhabitant:
     help_requested_by: str | None = None
     help_accepted: bool = False
     requested_help_from: set[str] = field(default_factory=set)
-    examinations: dict[str, bool] = field(default_factory=dict)
+    examinations: dict[str, Literal["clear", "inconclusive", "anomaly"]] = field(default_factory=dict)
+    containment_attempt: tuple[str, int] | None = None
     contained: bool = False
     showed_cold_distress: bool = False
+    health: int = 100
+    hungry_ticks: int = 0
+    cold_ticks: int = 0
+
+    @property
+    def alive(self) -> bool:
+        return self.health > 0
 
     def concern_about(self, subject: str) -> int:
-        if self.examinations.get(subject) is False:
+        if self.examinations.get(subject) == "clear":
             return 0
         reported = (
             report.concern * self.relationships[report.witness].trust // 100
@@ -260,6 +272,8 @@ class Simulation:
         self.tick += 1
         self.advance_power()
         for inhabitant in self.inhabitants:
+            if not inhabitant.alive:
+                continue
             inhabitant.hunger = min(MAX_NEED, inhabitant.hunger + 1)
             outdoors = self.rooms[inhabitant.room].outdoors
             cold = self.station.outdoor_temperature < 0
@@ -273,13 +287,35 @@ class Simulation:
                     inhabitant.help_accepted = False
             exposure = cold if outdoors else inhabitant.felt_cold
             inhabitant.fatigue = min(MAX_NEED, inhabitant.fatigue + 1 + exposure)
+            self.advance_health(inhabitant, exposure)
 
-        intents = [(agent, self.decide(agent)) for agent in self.inhabitants if not agent.contained]
+        intents = [
+            (agent, self.decide(agent)) for agent in self.inhabitants
+            if agent.alive and not agent.contained
+        ]
         self.last_intents = {agent.name: intent for agent, intent in intents}
         self.random.shuffle(intents)
         for agent, intent in intents:
             self.resolved_actions += self.resolve(agent, intent)
         self.finish_encounters()
+
+    def advance_health(self, agent: Inhabitant, exposed: bool) -> None:
+        agent.hungry_ticks = agent.hungry_ticks + 1 if agent.hunger == MAX_NEED else 0
+        agent.cold_ticks = agent.cold_ticks + 1 if exposed else 0
+        damage = int(agent.hungry_ticks >= STARVATION_TICKS) + 2 * int(agent.cold_ticks >= COLD_INJURY_TICKS)
+        previous = agent.health
+        if damage:
+            agent.health = max(0, agent.health - damage)
+        elif not exposed and agent.hunger < MAX_NEED:
+            agent.health = min(100, agent.health + 1)
+        if previous > 30 >= agent.health > 0:
+            self.record(agent, "health_impaired", agent.room)
+        elif not agent.alive:
+            self.record(
+                agent, "organism_died" if agent.name in self.organisms else "inhabitant_died",
+                agent.room, visible_as="death",
+                reason="Prolonged deprivation or cold exhausted the body's viability.",
+            )
 
     def advance_power(self) -> None:
         power = self.power
@@ -314,7 +350,8 @@ class Simulation:
             return Intent("assimilate", recipient=self.encounters[agent.name].target)
         peers = self.others_present(agent)
         for peer in peers:
-            if agent.examinations.get(peer.name) and not peer.contained:
+            if (agent.examinations.get(peer.name) == "anomaly" and not peer.contained
+                    and peer.fatigue >= VISIBLE_EXHAUSTION > agent.fatigue):
                 return Intent("contain", subject=peer.name)
         exits = self.rooms[agent.room].neighbors
         if exits and any(agent.concern_about(peer.name) >= 30
@@ -393,6 +430,7 @@ class Simulation:
         belief = agent.food_belief
         return (
             belief is not None
+            and peer.alive
             and agent.room == peer.room
             and peer.name not in belief.sources
             and peer.name != agent.name
@@ -466,15 +504,19 @@ class Simulation:
         return None
 
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
-        if agent.contained:
+        if agent.contained or not agent.alive:
             return False
         origin = self.rooms[agent.room]
         action = intent.action
         destination = intent.destination
         if action == "move":
-            if destination not in origin.neighbors:
+            if destination not in origin.neighbors or (agent.health <= 30 and self.tick % 2):
                 return False
             agent.room = destination
+            agent.containment_attempt = None
+            for peer in self.inhabitants:
+                if peer.containment_attempt and peer.containment_attempt[0] == agent.name:
+                    peer.containment_attempt = None
         elif action == "wait":
             return True
         elif action == "tell":
@@ -484,7 +526,7 @@ class Simulation:
             return self.warn(agent, intent)
         elif action == "request_help":
             peer = self.agents_by_name.get(intent.recipient)
-            if (peer is None or peer is agent or peer.room != agent.room
+            if (peer is None or peer is agent or not peer.alive or peer.room != agent.room
                     or not agent.felt_cold or peer.name in agent.requested_help_from):
                 return False
             agent.requested_help_from.add(peer.name)
@@ -536,25 +578,39 @@ class Simulation:
 
     def resolve_investigation(self, agent: Inhabitant, intent: Intent) -> bool:
         subject = self.agents_by_name.get(intent.subject)
-        if (subject is None or subject is agent or subject.contained or subject.room != agent.room
+        if (subject is None or subject is agent or not subject.alive or subject.contained
+                or subject.room != agent.room
                 or subject.name not in agent.witnessed_concerns):
             return False
         if intent.action == "examine":
             report = agent.witnessed_concerns[subject.name]
             if subject.name in agent.examinations or self.tick < report.observed_at + 2:
                 return False
-            abnormal = subject.name in self.organisms
-            agent.examinations[subject.name] = abnormal
-            if not abnormal:
+            organism = self.organisms.get(subject.name)
+            if subject.felt_cold or subject.fatigue == MAX_NEED:
+                result = "inconclusive"
+            elif organism and 0 < organism.recovery_until and self.tick <= organism.recovery_until + 4:
+                result = "anomaly"
+            else:
+                result = "clear"
+            agent.examinations[subject.name] = result
+            if result == "clear":
                 agent.suspicion.pop(subject.name, None)
                 agent.witnessed_concerns.pop(subject.name, None)
             self.record(
-                agent, "examination_anomaly" if abnormal else "examination_clear",
+                agent, f"examination_{result}",
                 agent.room, recipient=agent.name, subject=subject.name,
             )
             return True
-        if not agent.examinations.get(subject.name):
+        if (agent.examinations.get(subject.name) != "anomaly"
+                or not subject.fatigue >= VISIBLE_EXHAUSTION > agent.fatigue):
             return False
+        attempt = agent.containment_attempt
+        if attempt != (subject.name, self.tick - 1):
+            agent.containment_attempt = (subject.name, self.tick)
+            self.record(agent, "containment_started", agent.room, subject=subject.name)
+            return True
+        agent.containment_attempt = None
         subject.contained = True
         self.record(agent, "contained", agent.room, subject=subject.name)
         return True
@@ -562,7 +618,7 @@ class Simulation:
     def others_present(self, agent: Inhabitant) -> list[Inhabitant]:
         return [
             peer for peer in self.inhabitants
-            if peer is not agent and peer.room == agent.room
+            if peer is not agent and peer.alive and peer.room == agent.room
         ]
 
     def attempt_assimilation(self, agent: Inhabitant, target: str | None) -> bool:
@@ -591,7 +647,7 @@ class Simulation:
             actor = self.agents_by_name[name]
             target = self.agents_by_name[encounter.target]
             alone = (
-                not actor.contained and not target.contained
+                actor.alive and target.alive and not actor.contained and not target.contained
                 and actor.room == encounter.room and self.others_present(actor) == [target]
             )
             if alone and encounter.started_at == self.tick:
@@ -613,6 +669,7 @@ class Simulation:
                 target.heard_concerns.clear()
                 target.sent_concerns.clear()
                 target.examinations.clear()
+                target.containment_attempt = None
                 target.help_requested_by = None
                 target.help_accepted = False
                 target.requested_help_from.clear()
@@ -674,6 +731,8 @@ class Simulation:
     ) -> None:
         observations = []
         for observer in self.inhabitants:
+            if not observer.alive:
+                continue
             if observer.room not in (room, destination):
                 continue
             if recipient is not None and observer.name not in (agent.name, recipient):
@@ -690,8 +749,8 @@ class Simulation:
             if observer is not agent:
                 observer.relationships[agent.name].familiarity += 1
                 if visible_as == "uneasy_encounter":
-                    if observer.examinations.get(agent.name) is False:
-                        del observer.examinations[agent.name]
+                    if observer.examinations.get(agent.name) != "anomaly":
+                        observer.examinations.pop(agent.name, None)
                     strength = min(100, observer.suspicion.get(agent.name, 0) + 20)
                     observer.suspicion[agent.name] = strength
                     observer.witnessed_concerns[agent.name] = SuspicionReport(

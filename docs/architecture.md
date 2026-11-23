@@ -1,8 +1,8 @@
 # M0 architecture
 
 M0 uses Python 3.12 and the standard library. A fixed tick keeps movement,
-resource consumption, and concurrent encounters reproducible. Ticks are an
-abstract time unit.
+resource consumption, and concurrent encounters reproducible. Each tick represents ten simulated minutes. Survival thresholds are
+prototype parameters.
 
 | Component | Responsibility |
 | --- | --- |
