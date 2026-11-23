@@ -59,10 +59,6 @@ Trust is seeded and fixed for this slice. Familiarity grows through witnessed
 actions. The current food supply never replenishes, and familiarity does not
 yet influence decisions. Broader cooperation remains open M0 work.
 
-In 500-tick runs with seeds 1–3, the station consumed all 240 meals per run,
-generated 10–19 failed meal attempts and 128–130 shortage reports, and
-continued ordinary work after the reports began.
-
 ## Station power
 
 The main and backup supplies each burn one unit of fuel per operating tick.
@@ -75,7 +71,7 @@ In the low-fuel scenario, main fuel supports five ticks and backup fuel
 supports three more. Generator duty staff who feel indoor cold can walk to
 the generator. Refueling takes two work actions and a finite reserve. A
 co-located inhabitant can supply the second action, and the main supply
-returns on the following tick. The ordinary scenario starts with 720 main
+returns on the following tick. The ordinary scenario starts with 1,600 main
 fuel units. Both scenarios use the same rules.
 
 Radio duty makes an abstract contact with the outside while either power
@@ -128,15 +124,27 @@ second action on the next tick. Departure cancels the attempt. Containment
 prevents action but does not itself cause death. There is no release
 procedure.
 
-## Survival clock
+## Daily routines and survival
 
-Each tick represents ten simulated minutes. The prototype applies cold
-injury after three continuous hours of exposure and deprivation damage
-after a full day at maximum hunger. Severe impairment slows movement.
-Warmth and food permit gradual recovery. A body at zero health stops acting.
-An organism dies with its body, and the station clock keeps advancing.
-These are gameplay thresholds. Work, hunger and resupply still need tuning
-before long runs can represent realistic station life.
+Each tick represents ten minutes. Hunger rises once per hour, and usual meal
+thresholds give six to nine hours between meals before travel. Fatigue normally
+rises every two waking hours. Inhabitants tend to sleep after 14 to 20 waking
+hours. Sleep lasts seven hours, after which fatigue resets. Routine work
+holds its location for hour-long blocks unless a higher-priority action
+interrupts it. Those blocks represent time on task without a repeated work
+event every tick.
+
+The default station starts with 420 meals and enough main fuel for about
+eleven days. It has no replenishment loop. Three supplied seeds each sustained
+twelve healthy inhabitants for ten days.
+
+Cold adds fatigue after an hour and starts inflicting injury after three
+continuous hours of exposure. The model applies two health points of cold
+damage every 30 minutes thereafter. Once an inhabitant has spent three days
+at maximum hunger, deprivation costs one health point every two hours.
+Severe impairment limits movement to every second tick. A body at zero
+health stops acting, and the clock keeps advancing. These values are
+prototype gameplay assumptions.
 
 ## Camera modes
 
@@ -156,6 +164,7 @@ Graphical cameras and direct character control are planned beyond M0.
 ## Validation
 
 Run `python3 -m assimilation.batch --seeds 50 --ticks 240` for the 100-run
-evaluation. See the [architecture](docs/architecture.md)
+evaluation and `python3 -m assimilation.batch --multiday` for nine ten-day
+runs. See the [architecture](docs/architecture.md)
 and [M0 evaluation](docs/m0-evaluation.md) for the model boundaries,
 reproduction commands and remaining gaps.

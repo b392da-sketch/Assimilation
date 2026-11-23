@@ -2,106 +2,92 @@
 
 ## Reproduction
 
-From the repository root, using Python 3.12 with no additional dependencies:
+Use Python 3.12 from the repository root.
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m assimilation --seed 1 --ticks 1440
 python3 -m assimilation --scenario low-fuel --seed 1 --ticks 60 --events
-python3 -m assimilation --scenario hidden-organism --seed 10 --ticks 240 --events
 python3 -m assimilation --scenario hidden-organism --seed 19 --ticks 240 --events
-python3 -m assimilation.batch --seeds 50 --ticks 240 > m0-results.jsonl
+python3 -m assimilation.batch --seeds 50 --ticks 240 > m0-short.jsonl
+python3 -m assimilation.batch --multiday > m0-multiday.jsonl
 ```
 
-The batch runs seeds 1–50 for each of the ordinary and hidden-organism scenarios.
-Both start with the default station, 240 meals, and 720 main fuel. Each line
-records configuration, population, action and event counts, final resource
-state, runtime and peak Python allocations measured by `tracemalloc`. The last
-two metrics depend on the machine and include tracing overhead. The command
-exits with failure if its invariants detect an invalid state.
+The batch tool writes one row per run, including scenario, seed, elapsed
+ticks, population, activity counts, runtime, and peak Python allocations.
+Timings include memory tracing overhead. It exits with an error when a
+checked invariant fails.
 
-## Results
+## Short batch
+
+The batch repeats seeds 1–50 for the ordinary and hidden-organism scenarios.
+Both use the same 420 meals and 1,600 units of main fuel. Each run covers
+240 ticks, or 40 simulated hours.
 
 | Measure | Ordinary | Hidden organism |
 | --- | ---: | ---: |
 | Runs | 50 | 50 |
-| Resolved actions | 142,982 | 142,016 |
-| Recorded events | 143,592 | 142,648 |
-| Moves | 96,335 | 95,311 |
-| Food and suspicion messages | 4,159 | 4,357 |
-| Assimilation attempts / interrupted / completed | 0 / 0 / 0 | 76 / 73 / 3 |
-| Runs with containment | 0 | 4 |
+| Moves | 15,037 | 17,897 |
+| Meals eaten | 2,519 | 2,465 |
+| Completed sleep periods | 796 | 784 |
+| Warnings | 0 | 372 |
+| Assimilation attempts / interrupted / completed | 0 / 0 / 0 | 336 / 241 / 95 |
+| Runs with containment | 0 | 13 |
 | Invalid states detected | 0 | 0 |
-| Median traced seconds per run | 0.309 | 0.297 |
-| Highest peak traced Python allocations | 4.05 MiB | 4.03 MiB |
 
-No attempt remained pending at the batch cutoff. The three completions came
-from seeds 19, 20 and 33. Neither batch scenario exhausted its main fuel before
-the cutoff. No bodies died by the batch cutoff. The longer baseline and deprivation
-fixtures exercise impairment and death.
+The prior revision produced 76 assimilation attempts and three completions.
+The new routines materially change encounter opportunities. Longer periods in
+one room give pairs more chances to remain together across two ticks.
+These counts describe the model under the revised routines. They cannot
+establish plausible assimilation or containment frequencies.
 
-## Independent review corrections
+## Ten-day runs
 
-The original batch reported containment in 31 runs with immediate restraint
-after a perfect exam. The revised batch yielded 38 anomalous, 18 clear
-and six inconclusive examinations. Of 166 containment attempts, four
-completed. A containment now requires two consecutive eligible actions,
-and departure interrupts it. These counts measure the prototype rules
-under the tested conditions.
+Each row summarizes seeds 1–3 at 1,440 ticks each. All nine runs completed
+with zero detected invariant failures. The shortages are separate scenarios
+so food deprivation and cold injury can be observed independently.
 
-The clock uses ten-minute ticks. Sustained maximum hunger or cold reduces
-health. Severe impairment slows movement, and a controller can no longer
-act when the body dies. Tests distinguish being alive and contained from
-dying while contained.
+| Scenario | Provision | Survivors per run | Lowest final health per run | Meals remaining |
+| --- | --- | --- | --- | --- |
+| Ordinary | 420 meals and 1,600 main fuel | 12 / 12 / 12 | 100 / 100 / 100 | 107 / 107 / 113 |
+| Ration shortage | 72 meals and 1,600 main fuel | 12 / 12 / 12 | 45 / 43 / 44 | 0 / 0 / 0 |
+| Fuel shortage | 420 meals, five main and three backup fuel, no reserve | 0 / 0 / 0 | 0 / 0 / 0 | 390 / 388 / 393 |
 
-## Demonstrations
+The ordinary runs consumed 307–313 meals, equivalent to about 2.6 meals per
+inhabitant per day, and completed 112–116 seven-hour sleep periods per run.
+They finished on main power with 160 main fuel units available. Movement took
+roughly 10–11% of resolved ticks in these runs. This denominator includes
+sleep, ongoing work and waits. The earlier evaluation counted resolved ticks
+under a simulation with no sustained sleep or work, so the ratios describe
+different behavior.
 
-| Spec | Evidence |
+The ration-shortage runs show health decline while all inhabitants remain
+alive through day ten. A separate no-food test runs beyond ten days and
+checks that a contained organism can die from deprivation. The fuel-shortage
+runs exhausted backup power on tick nine and all inhabitants eventually died
+from sustained cold. All clocks reached day ten.
+
+## Acceptance evidence
+
+| Demonstration | Evidence |
 | --- | --- |
-| D1 Ordinary continuity | Ordinary seed 1 reached ten simulated days (1,440 ticks) and produced 206 work actions. All twelve eventually died after food ran out, and the clock continued. |
-| D2 Independent action | The same outage request is accepted or declined by recipients with different trust in the requester. The help test exercises both paths. |
-| D3 Information isolation | The interruption test confirms that someone outside the room receives no original encounter observation. |
-| D4 Testimony | The food testimony test confirms that relaying a report preserves the source chain and discounts confidence. The suspicion test verifies that reports do not become firsthand knowledge. |
-| D5 Environment | Low-fuel seed 1 switched to backup on tick 6, lost power on tick 9, and restored it on tick 14 after physical refueling. |
-| D6 Organism autonomy | Hidden-organism seed 19 shows routine activity, an organically generated private opportunity and a completed assimilation. Seed 10 shows examination and containment. |
-| D7 Interruption | The room-arrival test interrupts an encounter after continuation was submitted in the same tick. The batch registered 73 interruptions. |
-| D8 Reproducibility | Tests compared same-seed histories, ordinary final states, and interactive versus batch exports. |
-| D9 Variation | Identical station settings produced successful conversions only in seeds 19, 20, and 33 and containment in four of the 50 hidden-organism runs. |
-| D10 Causality | In low-fuel seed 1, `trace 158` follows backup event 61, blackout 98, refuel start 142, refuel completion 149, and main restoration 158. |
+| D1 Ordinary continuity | Three supplied ten-day runs sustained meals, sleep, work and all twelve inhabitants. |
+| D2 Independent action | The help test shows recipients accepting or declining the same request based on their trust in the requester. |
+| D3 Information isolation | In the encounter interruption test, an absent agent receives no original observation. |
+| D4 Testimony | Tests check source preservation, confidence discounts, and the effect of trust on avoidance. |
+| D5 Environmental consequence | Low-fuel seed 1 uses backup, loses power, and restores it after refueling. |
+| D6 Autonomous organism | Hidden-organism seed 19 completes assimilation through normal simulation actions. |
+| D7 Interruption | A test interrupts conversion after a continuation action when another agent enters the room. |
+| D8 Replay | Tests compare same-seed histories and final states and verify that observer inspection does not alter replay. |
+| D9 Variation | Seeds change movement and encounter outcomes. Independent shortages change survival outcomes. |
+| D10 Causal inspection | Low-fuel seed 1 event 58 traces restoration through refueling and the blackout. |
 
-## Independent review questions
-
-1. **Emergent behavior.** Encounters follow routine movement and seeded
-   initiative. Refueling may be completed by one inhabitant or assisted by a
-   co-located peer. No story event selects these outcomes.
-2. **Rigid behavior.** Work consumes one tick, the same routes are often
-   repeated, and a fixed trust threshold determines cooperation.
-3. **Knowledge.** No leak was found in the tested paths. Agents know their
-   station map and can observe a room they occupy. Testimony and examination
-   remain private. The single-module boundary still relies on disciplined
-   code and tests.
-4. **Organism decisions.** Attempts follow a visible one-on-one opportunity,
-   current needs and recovery. The policy has no deliberate search or
-   deception planning.
-5. **Routine plausibility.** Movement, work and rest are visible, but shifts,
-   replenishment remain absent. Ten-minute ticks make elapsed time measurable.
-   Survival thresholds still need tuning.
-6. **Without an outbreak.** All 50 ordinary runs continued with human agents
-   pursuing needs and duties.
-7. **Recovery.** Backup can sustain heat temporarily. Main power returns
-   after refueling when a reserve is present. Once the reserve is exhausted,
-   there is no resupply.
-8. **Sensitivity.** Seeds change schedules, encounters and outcomes.
-   Starting fuel availability controls whether a short run sees an outage.
-9. **Pathologies.** Movement dominates the event stream. Stores have no resupply loop,
-   so the prolonged baseline ends with all inhabitants dead. Cold distress
-   can still generate many examinations.
-10. **Next priorities.** Calibrate shifts and resource stewardship,
-    separate local perception from objective state at the policy boundary,
-    and exercise investigation across more scenarios. Expand causal
-    capture beyond the selected event chains.
-
-The results support a working headless prototype with reproducible simulations
-and usable observer tools. They leave the multi-day realism criterion open.
-Release from containment, broader cooperation,
-full decision traces and graphical cameras remain unimplemented.
+Ordinary activities are deliberately simple. Work blocks hold one location
+and do not model shifts, work products, or differences in professional skill.
+The station can use its stock over ten days, but has no way to replenish it.
+Health thresholds are gameplay parameters and do not validate medical realism.
+Evidence and containment remain abstract and can still be repetitive.
+Decision logic relies on a single kernel module with tests enforcing local
+knowledge, and only selected causal chains are captured. A subsequent
+iteration can improve the perception boundary, technical roles, and
+resource stewardship using these baselines.

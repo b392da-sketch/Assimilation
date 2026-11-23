@@ -82,7 +82,9 @@ class KernelTests(unittest.TestCase):
         self.assertEqual(relay.relationships[source.name].familiarity, 1)
 
     def test_autonomous_reports_follow_a_local_food_shortage(self):
-        simulation = self.run_seed(1, 500)
+        simulation = Simulation(1, replace(DEFAULT_STATION, initial_food=30))
+        for _ in range(500):
+            simulation.advance()
         first_report = next(event for event in simulation.history if event.action == "tell")
         self.assertFalse(first_report.testimony.available)
         self.assertTrue(any(
@@ -109,12 +111,13 @@ class KernelTests(unittest.TestCase):
         simulation = Simulation(1, station)
         first = simulation.inhabitants[0]
         fatigue = first.fatigue
-        simulation.advance()
+        for _ in range(6):
+            simulation.advance()
         self.assertEqual(first.room, "yard")
-        self.assertEqual(first.fatigue, fatigue + 2)
+        self.assertEqual(first.fatigue, fatigue + 1)
 
     def test_backup_prevents_indoor_exposure_until_it_runs_out(self):
-        station = replace(DEFAULT_STATION, power=PowerConfig("generator", 1, 1, 0))
+        station = Station((Room("shelter", ()),), "shelter", power=PowerConfig("shelter", 1, 1, 0))
         simulation = Simulation(1, station)
         agent = simulation.inhabitants[0]
         for source in ("main", "backup", "off"):
@@ -125,19 +128,22 @@ class KernelTests(unittest.TestCase):
             [event.action for event in simulation.history if event.actor == "station"],
             ["power_backup", "power_off"],
         )
-        self.assertFalse(agent.checked_generator)
 
     def test_radio_contact_depends_on_power_and_location(self):
-        station = replace(DEFAULT_STATION, power=PowerConfig("generator", 1, 1, 0, "radio"))
+        station = replace(DEFAULT_STATION, power=PowerConfig("generator", 6, 6, 0, "radio"))
         simulation = Simulation(1, station)
         operator = simulation.inhabitants[0]
         self.assertFalse(simulation.resolve(operator, Intent("work")))
         operator.room = "radio"
-        for tick, action in ((1, "radio_contact"), (2, "radio_contact"), (3, "radio_unpowered")):
+        for tick in range(1, 14):
             simulation.tick = tick
             simulation.advance_power()
+            if tick not in (1, 7, 13):
+                self.assertFalse(simulation.resolve(operator, Intent("work")))
+                continue
             self.assertTrue(simulation.resolve(operator, Intent("work")))
-            self.assertEqual(simulation.history[-1].action, action)
+            expected = "radio_unpowered" if tick == 13 else "radio_contact"
+            self.assertEqual(simulation.history[-1].action, expected)
 
     def test_help_requires_contact_and_is_evaluated_independently(self):
         simulation = Simulation(1)
@@ -279,6 +285,7 @@ class KernelTests(unittest.TestCase):
         simulation.tick = 2
         self.assertFalse(simulation.resolve(absent, examination))
         subject.felt_cold = False
+        subject.fatigue = 8
         self.assertTrue(simulation.resolve(examiner, examination))
         self.assertEqual(simulation.history[-1].action, "examination_clear")
         self.assertEqual(examiner.concern_about(subject.name), 0)
@@ -334,18 +341,46 @@ class KernelTests(unittest.TestCase):
         self.assertEqual(simulation.tick, 5)
 
     def test_prolonged_deprivation_can_kill_a_contained_organism(self):
-        station = replace(DEFAULT_STATION, initial_food=0)
+        station = replace(DEFAULT_STATION, initial_food=0, power=None)
         simulation = Simulation(2, station, hidden_organism=True)
         target = simulation.agents_by_name[next(iter(simulation.organisms))]
         target.contained = True
-        for _ in range(270):
+        for _ in range(1440):
+            simulation.advance()
+        self.assertTrue(target.alive)
+        self.assertLess(target.health, 100)
+        for _ in range(360):
             simulation.advance()
         self.assertFalse(target.alive)
         self.assertTrue(target.contained)
         self.assertFalse(simulation.resolve(target, Intent("wait")))
         deaths = [event for event in simulation.history if event.action == "organism_died"]
         self.assertEqual([event.actor for event in deaths], [target.name])
-        self.assertEqual(simulation.tick, 270)
+        self.assertEqual(simulation.tick, 1800)
+
+    def test_cold_damage_requires_sustained_exposure(self):
+        station = Station((Room("yard", (), outdoors=True),), "yard")
+        simulation = Simulation(1, station)
+        agent = simulation.inhabitants[0]
+        for _ in range(17):
+            simulation.advance()
+        self.assertEqual(agent.health, 100)
+        simulation.advance()
+        self.assertEqual(agent.health, 98)
+
+    def test_supplied_station_sustains_ten_days_of_routines(self):
+        simulation = self.run_seed(1, 1440)
+        self.assertTrue(all(agent.health == 100 for agent in simulation.inhabitants))
+        self.assertGreater(simulation.food, 0)
+        self.assertEqual(simulation.power.source, "main")
+        for agent in simulation.inhabitants:
+            meals = [event.tick for event in simulation.history
+                     if event.actor == agent.name and event.action == "eat"]
+            nights = [event.tick for event in simulation.history
+                      if event.actor == agent.name and event.action == "sleep_completed"]
+            self.assertTrue(20 <= len(meals) <= 36)
+            self.assertTrue(8 <= len(nights) <= 11)
+            self.assertTrue(all(b - a >= 36 for a, b in zip(meals, meals[1:])))
 
     def test_long_run_preserves_resource_and_state_bounds(self):
         simulation = self.run_seed(42, 500)

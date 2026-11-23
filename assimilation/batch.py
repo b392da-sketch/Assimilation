@@ -2,18 +2,20 @@
 
 import argparse
 from collections import Counter
+from dataclasses import replace
 import json
 from time import perf_counter
 import tracemalloc
 
-from .kernel import MAX_NEED, Simulation
+from .kernel import DEFAULT_STATION, MAX_NEED, PowerConfig, Simulation, Station
 
 
-def evaluate(seed: int, ticks: int, hidden_organism: bool) -> dict:
+def evaluate(seed: int, ticks: int, scenario: str, station: Station) -> dict:
+    hidden_organism = scenario == "hidden-organism"
     started = perf_counter()
     tracemalloc.start()
     try:
-        simulation = Simulation(seed, hidden_organism=hidden_organism)
+        simulation = Simulation(seed, station, hidden_organism=hidden_organism)
         for _ in range(ticks):
             simulation.advance()
         _, peak_bytes = tracemalloc.get_traced_memory()
@@ -48,14 +50,16 @@ def evaluate(seed: int, ticks: int, hidden_organism: bool) -> dict:
         "organism_alive": sum(simulation.agents_by_name[body].alive for body in organisms),
     }
     return {
-        "scenario": "hidden-organism" if hidden_organism else "ordinary",
+        "scenario": scenario,
         "seed": seed,
         "ticks": simulation.tick,
         "initial_population": {"human": len(names) - int(hidden_organism),
                                "organism": int(hidden_organism), "contained": 0},
         "final_population": population,
         "food_remaining": simulation.food,
+        "initial_food": station.initial_food,
         "initial_main_fuel": simulation.station.power.main_fuel,
+        "minimum_final_health": min(agent.health for agent in simulation.inhabitants),
         "movements": counts["move"],
         "assimilation_attempts": counts["assimilation_started"],
         "assimilation_completions": counts["assimilation_completed"],
@@ -84,15 +88,26 @@ def evaluate(seed: int, ticks: int, hidden_organism: bool) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seeds", type=int, default=50, help="Number of seeds per scenario, starting at 1")
-    parser.add_argument("--ticks", type=int, default=240)
+    parser.add_argument("--seeds", type=int, help="Number of seeds per scenario, starting at 1")
+    parser.add_argument("--ticks", type=int)
+    parser.add_argument("--multiday", action="store_true", help="Run ten-day baseline and adverse scenarios")
     args = parser.parse_args()
-    if args.seeds < 1 or args.ticks < 0:
+    seeds = args.seeds if args.seeds is not None else (3 if args.multiday else 50)
+    ticks = args.ticks if args.ticks is not None else (1440 if args.multiday else 240)
+    if seeds < 1 or ticks < 0:
         parser.error("--seeds must be positive and --ticks must be nonnegative")
+    scenarios = [("ordinary", DEFAULT_STATION)]
+    if args.multiday:
+        scenarios.extend((
+            ("ration-shortage", replace(DEFAULT_STATION, initial_food=72)),
+            ("fuel-shortage", replace(DEFAULT_STATION, power=PowerConfig("generator", 5, 3, 0, "radio"))),
+        ))
+    else:
+        scenarios.append(("hidden-organism", DEFAULT_STATION))
     invalid = False
-    for hidden_organism in (False, True):
-        for seed in range(1, args.seeds + 1):
-            row = evaluate(seed, args.ticks, hidden_organism)
+    for scenario, station in scenarios:
+        for seed in range(1, seeds + 1):
+            row = evaluate(seed, ticks, scenario, station)
             invalid |= bool(row["invalid_state_count"])
             print(json.dumps(row), flush=True)
     if invalid:

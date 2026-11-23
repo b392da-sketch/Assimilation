@@ -12,8 +12,11 @@ Activity = Literal["eat", "rest", "work", "wait"]
 MAX_NEED = 12
 VISIBLE_EXHAUSTION = 9
 MINUTES_PER_TICK = 10
-STARVATION_TICKS = 24 * 60 // MINUTES_PER_TICK
+TICKS_PER_HOUR = 60 // MINUTES_PER_TICK
+STARVATION_TICKS = 3 * 24 * TICKS_PER_HOUR
 COLD_INJURY_TICKS = 3 * 60 // MINUTES_PER_TICK
+SLEEP_TICKS = 7 * TICKS_PER_HOUR
+WORK_TICKS = TICKS_PER_HOUR
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,7 @@ class PowerState:
 class Station:
     rooms: tuple[Room, ...]
     quarters: str
-    initial_food: int = 240
+    initial_food: int = 420
     outdoor_temperature: int = -24
     power: PowerConfig | None = None
 
@@ -90,7 +93,7 @@ DEFAULT_STATION = Station(
         Room("generator", ("airlock",), ("work",)),
     ),
     quarters="quarters",
-    power=PowerConfig("generator", main_fuel=720, backup_fuel=4, reserve_fuel=80, radio_room="radio"),
+    power=PowerConfig("generator", main_fuel=1600, backup_fuel=4, reserve_fuel=80, radio_room="radio"),
 )
 
 
@@ -191,6 +194,10 @@ class Inhabitant:
     health: int = 100
     hungry_ticks: int = 0
     cold_ticks: int = 0
+    hunger_clock: int = 0
+    awake_clock: int = 0
+    sleep_until: int = 0
+    work_until: int = 0
 
     @property
     def alive(self) -> bool:
@@ -274,7 +281,10 @@ class Simulation:
         for inhabitant in self.inhabitants:
             if not inhabitant.alive:
                 continue
-            inhabitant.hunger = min(MAX_NEED, inhabitant.hunger + 1)
+            inhabitant.hunger_clock += 1
+            if inhabitant.hunger_clock == TICKS_PER_HOUR:
+                inhabitant.hunger_clock = 0
+                inhabitant.hunger = min(MAX_NEED, inhabitant.hunger + 1)
             outdoors = self.rooms[inhabitant.room].outdoors
             cold = self.station.outdoor_temperature < 0
             if not outdoors:
@@ -286,7 +296,16 @@ class Simulation:
                     inhabitant.help_requested_by = None
                     inhabitant.help_accepted = False
             exposure = cold if outdoors else inhabitant.felt_cold
-            inhabitant.fatigue = min(MAX_NEED, inhabitant.fatigue + 1 + exposure)
+            if inhabitant.sleep_until and self.tick >= inhabitant.sleep_until:
+                inhabitant.sleep_until = 0
+                inhabitant.fatigue = 0
+                inhabitant.awake_clock = 0
+                self.record(inhabitant, "sleep_completed", inhabitant.room)
+            elif not inhabitant.sleep_until:
+                inhabitant.awake_clock += 1
+                exertion = inhabitant.awake_clock % (2 * TICKS_PER_HOUR) == 0
+                cold_fatigue = exposure and (inhabitant.cold_ticks + 1) % TICKS_PER_HOUR == 0
+                inhabitant.fatigue = min(MAX_NEED, inhabitant.fatigue + exertion + cold_fatigue)
             self.advance_health(inhabitant, exposure)
 
         intents = [
@@ -302,7 +321,11 @@ class Simulation:
     def advance_health(self, agent: Inhabitant, exposed: bool) -> None:
         agent.hungry_ticks = agent.hungry_ticks + 1 if agent.hunger == MAX_NEED else 0
         agent.cold_ticks = agent.cold_ticks + 1 if exposed else 0
-        damage = int(agent.hungry_ticks >= STARVATION_TICKS) + 2 * int(agent.cold_ticks >= COLD_INJURY_TICKS)
+        starvation_damage = (
+            agent.hungry_ticks >= STARVATION_TICKS and agent.hungry_ticks % (2 * TICKS_PER_HOUR) == 0
+        )
+        cold_damage = agent.cold_ticks >= COLD_INJURY_TICKS and agent.cold_ticks % 3 == 0
+        damage = int(starvation_damage) + 2 * int(cold_damage)
         previous = agent.health
         if damage:
             agent.health = max(0, agent.health - damage)
@@ -345,6 +368,8 @@ class Simulation:
             self.last_power_event = len(self.history)
 
     def decide(self, agent: Inhabitant) -> Intent:
+        if agent.sleep_until:
+            return Intent("sleep")
         organism = self.organisms.get(agent.name)
         if agent.name in self.encounters:
             return Intent("assimilate", recipient=self.encounters[agent.name].target)
@@ -400,6 +425,8 @@ class Simulation:
                 if self.can_share(agent, peer):
                     return Intent("tell", recipient=peer.name)
 
+        if self.tick < agent.work_until:
+            return Intent("continue_work")
         return self.toward(agent.room, "work", agent.duty_room) or Intent("wait")
 
     def power_response(self, agent: Inhabitant) -> Intent | None:
@@ -421,7 +448,7 @@ class Simulation:
             return None
         if not agent.requested_help_from:
             for peer in self.others_present(agent):
-                if peer.duty_room != generator:
+                if peer.duty_room != generator and not peer.sleep_until:
                     return Intent("request_help", recipient=peer.name)
         step = self.first_step(agent.room, lambda room: room.name == generator)
         return Intent("move", step) if step else None
@@ -431,6 +458,7 @@ class Simulation:
         return (
             belief is not None
             and peer.alive
+            and not peer.sleep_until
             and agent.room == peer.room
             and peer.name not in belief.sources
             and peer.name != agent.name
@@ -441,6 +469,7 @@ class Simulation:
         previous = agent.sent_concerns.get((peer.name, report.subject), -1)
         return (
             agent.room == peer.room
+            and not peer.sleep_until
             and peer.name not in (agent.name, report.subject)
             and previous < report.observed_at
         )
@@ -506,6 +535,8 @@ class Simulation:
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
         if agent.contained or not agent.alive:
             return False
+        if agent.sleep_until:
+            return intent.action == "sleep"
         origin = self.rooms[agent.room]
         action = intent.action
         destination = intent.destination
@@ -513,12 +544,15 @@ class Simulation:
             if destination not in origin.neighbors or (agent.health <= 30 and self.tick % 2):
                 return False
             agent.room = destination
+            agent.work_until = 0
             agent.containment_attempt = None
             for peer in self.inhabitants:
                 if peer.containment_attempt and peer.containment_attempt[0] == agent.name:
                     peer.containment_attempt = None
         elif action == "wait":
             return True
+        elif action == "continue_work":
+            return self.tick < agent.work_until
         elif action == "tell":
             peer = self.agents_by_name.get(intent.recipient)
             return peer is not None and self.tell(agent, peer)
@@ -526,7 +560,8 @@ class Simulation:
             return self.warn(agent, intent)
         elif action == "request_help":
             peer = self.agents_by_name.get(intent.recipient)
-            if (peer is None or peer is agent or not peer.alive or peer.room != agent.room
+            if (peer is None or peer is agent or not peer.alive or peer.sleep_until
+                    or peer.room != agent.room
                     or not agent.felt_cold or peer.name in agent.requested_help_from):
                 return False
             agent.requested_help_from.add(peer.name)
@@ -560,18 +595,25 @@ class Simulation:
                 return False
             self.food -= 1
             agent.hunger = 0
+            agent.hunger_clock = 0
+            agent.hungry_ticks = 0
         elif action == "rest":
             agent.goal = None
             shivering = (
                 agent.felt_cold and agent.fatigue == MAX_NEED and not agent.showed_cold_distress
             )
-            agent.fatigue = max(0, agent.fatigue - 6)
+            agent.sleep_until = self.tick + SLEEP_TICKS
+            agent.work_until = 0
             if shivering:
                 agent.showed_cold_distress = True
                 self.record(agent, action, origin.name, visible_as="uneasy_encounter")
                 return True
-        elif action == "work" and self.station.power and origin.name == self.station.power.radio_room:
-            action = "radio_contact" if self.power.source != "off" else "radio_unpowered"
+        elif action == "work":
+            if self.tick < agent.work_until:
+                return False
+            agent.work_until = self.tick + WORK_TICKS
+            if self.station.power and origin.name == self.station.power.radio_room:
+                action = "radio_contact" if self.power.source != "off" else "radio_unpowered"
 
         self.record(agent, action, origin.name, destination)
         return True
@@ -731,7 +773,7 @@ class Simulation:
     ) -> None:
         observations = []
         for observer in self.inhabitants:
-            if not observer.alive:
+            if not observer.alive or (observer.sleep_until and observer is not agent):
                 continue
             if observer.room not in (room, destination):
                 continue
