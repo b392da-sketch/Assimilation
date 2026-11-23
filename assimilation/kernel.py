@@ -12,9 +12,10 @@ from .communication import (
     QUESTION_COOLDOWN, QUESTION_TIMEOUT, VERIFICATION_COOLDOWN, VERIFICATION_TIMEOUT,
     Assessment, Evidence, Message, Verification, assess, retain,
 )
+from .defense import DangerCue, DistressCue
 from .policy import (
     Activity, Decision, DecisionView, Disposition, FoodBelief, Intent, LocalPeer, Room,
-    VISIBLE_EXHAUSTION, choose,
+    VISIBLE_EXHAUSTION, choose, respond_to_distress,
 )
 
 from .relationships import Experience, Relationship
@@ -141,6 +142,10 @@ class Encounter:
     started_at: int
     start_event: int
     continued: bool = False
+    notice_at: int = 0
+    response_event: int | None = None
+    interruption: str | None = None
+    interruption_event: int | None = None
 
 
 @dataclass(frozen=True)
@@ -170,6 +175,8 @@ class Inhabitant:
     meal_threshold: int
     rest_threshold: int
     disposition: Disposition = field(default_factory=Disposition)
+    danger: DangerCue | None = None
+    distress: DistressCue | None = None
     memory: deque[Observation] = field(default_factory=lambda: deque(maxlen=32))
     food_belief: FoodBelief | None = None
     food_evidence: list[Evidence] = field(default_factory=list)
@@ -311,6 +318,8 @@ class Simulation:
         for inhabitant in self.inhabitants:
             if not inhabitant.alive:
                 continue
+            if inhabitant.distress and inhabitant.distress.tick < self.tick:
+                inhabitant.distress = None
             for source, (_, expires) in tuple(inhabitant.pending_food_questions.items()):
                 if self.tick >= expires:
                     del inhabitant.pending_food_questions[source]
@@ -348,6 +357,7 @@ class Simulation:
                 inhabitant.fatigue = min(MAX_NEED, inhabitant.fatigue + exertion + cold_fatigue)
             self.advance_health(inhabitant, exposure)
 
+        self.publish_danger_cues()
         plans = [
             (agent, self.plan(agent)) for agent in self.inhabitants
             if agent.alive and not agent.contained
@@ -355,13 +365,38 @@ class Simulation:
         self.last_intents = {agent.name: decision.intent for agent, decision in plans}
         self.random.shuffle(plans)
         for agent, decision in plans:
-            first_event = len(self.history) + 1
-            resolved = self.resolve(agent, decision.intent)
-            self.resolved_actions += resolved
-            self.decision_records[agent.name].append(DecisionRecord(
-                self.tick, decision, resolved, tuple(range(first_event, len(self.history) + 1)),
-            ))
+            self.resolve_decision(agent, decision)
+        for agent, decision in plans:
+            if decision.intent.action == "wait":
+                response = respond_to_distress(self.perceive(agent)) if agent.distress else None
+                if response:
+                    self.last_intents[agent.name] = response.intent
+                    self.resolve_decision(agent, response, count=0)
         self.finish_encounters()
+
+    def resolve_decision(self, agent: Inhabitant, decision: Decision, count: int = 1) -> None:
+        first_event = len(self.history) + 1
+        resolved = self.resolve(agent, decision.intent)
+        self.resolved_actions += count * resolved
+        agent_record = self.decision_records[agent.name]
+        agent_record.append(DecisionRecord(
+            self.tick, decision, resolved, tuple(range(first_event, len(self.history) + 1)),
+        ))
+
+    def publish_danger_cues(self) -> None:
+        for encounter in self.encounters.values():
+            target = self.agents_by_name[encounter.target]
+            actor = self.agents_by_name[encounter.actor]
+            if (self.tick < encounter.notice_at or target.danger or target.sleep_until
+                    or target.health <= 15 or target.contained or not actor.alive
+                    or target.room != encounter.room or actor.room != encounter.room):
+                continue
+            self.record(
+                target, "danger_noticed", target.room, recipient=target.name, subject=actor.name,
+                causes=(encounter.start_event,),
+                reason="The target recognized immediate danger from a local interaction.",
+            )
+            target.danger = DangerCue(actor.name, len(self.history))
 
     def advance_health(self, agent: Inhabitant, exposed: bool) -> None:
         agent.hungry_ticks = agent.hungry_ticks + 1 if agent.hunger == MAX_NEED else 0
@@ -519,6 +554,9 @@ class Simulation:
             encounter_target=encounter.target if encounter else None,
             can_start_encounter=organism is not None and self.tick >= organism.recovery_until,
             known_converts=frozenset(organism.converted) if organism else frozenset(),
+            health=agent.health,
+            danger=agent.danger,
+            distress=agent.distress,
         )
 
     def decide(self, agent: Inhabitant) -> Intent:
@@ -737,6 +775,86 @@ class Simulation:
             previous[0] != objection_id and self.tick >= previous[1] + VERIFICATION_COOLDOWN
         )
 
+    def relocate(self, agent: Inhabitant, destination: str | None) -> bool:
+        if destination not in self.rooms[agent.room].neighbors or (agent.health <= 30 and self.tick % 2):
+            return False
+        agent.room = destination
+        agent.work_until = 0
+        agent.containment_attempt = None
+        for peer in self.inhabitants:
+            if peer.containment_attempt and peer.containment_attempt[0] == agent.name:
+                peer.containment_attempt = None
+        return True
+
+    def resolve_defense(self, agent: Inhabitant, intent: Intent) -> bool:
+        if intent.action == "answer_distress":
+            cue = agent.distress
+            if cue is None or cue.tick != self.tick or intent.destination != cue.room:
+                return False
+            origin = agent.room
+            if not self.relocate(agent, cue.room):
+                return False
+            self.record(agent, "answer_distress", origin, cue.room, causes=(cue.event_id,),
+                        reason="A nearby inhabitant reached the room after hearing the call.")
+            for encounter in self.encounters.values():
+                if (encounter.target == cue.caller and encounter.room == cue.room
+                        and encounter.interruption is None):
+                    encounter.interruption_event = len(self.history)
+                    encounter.interruption = "A nearby inhabitant arrived after hearing the target's call."
+            agent.distress = None
+            return True
+
+        cue = agent.danger
+        encounter = self.encounters.get(cue.source) if cue else None
+        if (encounter is None or encounter.target != agent.name or agent.room != encounter.room
+                or self.agents_by_name[encounter.actor].room != encounter.room):
+            return False
+        attacker = self.agents_by_name[encounter.actor]
+        action = intent.action
+        origin = agent.room
+        causes = (cue.event_id,)
+        if action == "call_for_help":
+            self.record(agent, action, origin, causes=causes, audible_rooms=self.rooms[origin].neighbors)
+            event_id = len(self.history)
+            for name, _ in self.history[-1].observations:
+                if name != agent.name and name != attacker.name:
+                    self.agents_by_name[name].distress = DistressCue(agent.name, origin, self.tick, event_id)
+            encounter.response_event = event_id
+            return True
+
+        capacity = agent.health - 4 * agent.fatigue
+        opposition = attacker.health - 4 * attacker.fatigue
+        if action == "escape_danger":
+            if intent.destination not in self.rooms[origin].neighbors:
+                reason = "The intended exit does not connect to this room."
+            elif encounter.continued and capacity < opposition:
+                reason = "The encounter was already progressing and the target could not break away."
+            elif self.relocate(agent, intent.destination):
+                reason = None
+            else:
+                reason = "Impaired movement prevented crossing the exit this tick."
+        else:
+            continuation_cost = 8 if encounter.continued else 0
+            reason = (
+                "The target lacked the capacity to interrupt the interaction."
+                if agent.health <= 30 or capacity < opposition + continuation_cost else None
+            )
+
+        resolved = reason is None
+        self.record(
+            agent, action if resolved else f"{action}_failed", origin,
+            intent.destination if action == "escape_danger" and resolved else None,
+            causes=causes, reason=reason,
+        )
+        encounter.response_event = len(self.history)
+        if resolved and encounter.interruption is None:
+            encounter.interruption_event = encounter.response_event
+            encounter.interruption = (
+                "The target left through an exit." if action == "escape_danger"
+                else "The target's resistance interrupted continuation."
+            )
+        return resolved
+
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
         if agent.contained or not agent.alive:
             return False
@@ -746,14 +864,10 @@ class Simulation:
         action = intent.action
         destination = intent.destination
         if action == "move":
-            if destination not in origin.neighbors or (agent.health <= 30 and self.tick % 2):
+            if not self.relocate(agent, destination):
                 return False
-            agent.room = destination
-            agent.work_until = 0
-            agent.containment_attempt = None
-            for peer in self.inhabitants:
-                if peer.containment_attempt and peer.containment_attempt[0] == agent.name:
-                    peer.containment_attempt = None
+        elif action in ("escape_danger", "resist_danger", "call_for_help", "answer_distress"):
+            return self.resolve_defense(agent, intent)
         elif action == "wait":
             return True
         elif action == "continue_work":
@@ -843,6 +957,12 @@ class Simulation:
                 action = "radio_contact" if self.power.source != "off" else "radio_unpowered"
 
         self.record(agent, action, origin.name, destination)
+        if action == "move":
+            for encounter in self.encounters.values():
+                if (destination == encounter.room and agent.name not in (encounter.actor, encounter.target)
+                        and encounter.interruption is None):
+                    encounter.interruption_event = len(self.history)
+                    encounter.interruption = "Another inhabitant entered the encounter room."
         return True
 
     def resolve_investigation(self, agent: Inhabitant, intent: Intent) -> bool:
@@ -899,7 +1019,8 @@ class Simulation:
             return False
         encounter = self.encounters.get(agent.name)
         if encounter:
-            if target != encounter.target or self.tick != encounter.started_at + 1:
+            if (target != encounter.target or self.tick != encounter.started_at + 1
+                    or encounter.interruption is not None):
                 return False
             encounter.continued = True
             return True
@@ -907,8 +1028,13 @@ class Simulation:
             agent, "assimilation_started", agent.room, subject=target, visible_as="uneasy_encounter",
             reason="The organism attempted conversion while alone with one inhabitant.",
         )
-        self.encounters[agent.name] = Encounter(agent.name, others[0].name, agent.room, self.tick,
-                                                len(self.history))
+        subject = others[0]
+        distracted = self.tick < subject.work_until and subject.disposition.caution < 0
+        delay = 2 if distracted or subject.fatigue >= VISIBLE_EXHAUSTION else 1
+        self.encounters[agent.name] = Encounter(
+            agent.name, subject.name, agent.room, self.tick, len(self.history),
+            notice_at=self.tick + delay,
+        )
         return True
 
     def finish_encounters(self) -> None:
@@ -922,9 +1048,17 @@ class Simulation:
             if alone and encounter.started_at == self.tick:
                 continue
             del self.encounters[name]
+            recognized = target.danger is not None
+            target.danger = None
+            causes = tuple(dict.fromkeys(
+                event_id for event_id in (
+                    encounter.start_event, encounter.response_event, encounter.interruption_event,
+                ) if event_id is not None
+            ))
             organism = self.organisms[name]
             organism.recovery_until = self.tick + 3
-            if alone and encounter.continued and target.name not in self.organisms:
+            if (alone and encounter.continued and encounter.interruption is None
+                    and target.name not in self.organisms):
                 organism.converted.add(target.name)
                 offspring = Organism(
                     len(self.organisms) + 1, organism.identity, target.name, self.tick + 3,
@@ -959,18 +1093,28 @@ class Simulation:
                     for peer, relationship in target.relationships.items()
                 }
                 target.goal = None
+                reason = "The pair remained alone and conversion continued."
+                if not recognized:
+                    if target.sleep_until:
+                        reason += " The target was asleep."
+                    elif target.health <= 15:
+                        reason += " The target was too impaired to recognize danger."
+                    elif self.tick < encounter.notice_at:
+                        reason += " Recognition was delayed past the available response window."
                 self.history.append(Event(self.tick, name, "assimilation_completed", actor.room, (),
-                                          subject=target.name, causes=(encounter.start_event,),
-                                          reason="The pair remained alone and conversion continued."))
+                                          subject=target.name, causes=causes,
+                                          reason=reason))
             else:
-                if not alone:
+                if encounter.interruption:
+                    reason = encounter.interruption
+                elif not alone:
                     reason = "The pair no longer met the location, privacy, or containment requirements."
                 elif not encounter.continued:
                     reason = "The next conversion action did not resolve."
                 else:
                     reason = "The target already had an organism controller."
                 self.history.append(Event(self.tick, name, "assimilation_interrupted", encounter.room,
-                                          (), subject=target.name, causes=(encounter.start_event,),
+                                          (), subject=target.name, causes=causes,
                                           reason=reason))
 
     def refuel(self, agent: Inhabitant) -> bool:
@@ -1056,6 +1200,7 @@ class Simulation:
         subject: str | None = None, visible_as: str | None = None,
         concern: SuspicionReport | None = None,
         causes: tuple[int, ...] = (), reason: str | None = None, message: Message | None = None,
+        audible_rooms: tuple[str, ...] = (),
     ) -> None:
         observations = []
         event_id = len(self.history) + 1
@@ -1068,7 +1213,7 @@ class Simulation:
         for observer in self.inhabitants:
             if not observer.alive or (observer.sleep_until and observer is not agent):
                 continue
-            if observer.room not in (room, destination):
+            if observer.room not in (room, destination, *audible_rooms):
                 continue
             if recipient is not None and observer.name not in (agent.name, recipient):
                 continue

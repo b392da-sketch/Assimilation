@@ -403,3 +403,65 @@ target for tuning.
 A proposal blocked by a busy recipient leaves the proposer's history and
 cooldown untouched. The same objection can support a retry when the
 recipient becomes available.
+
+### D11 audit correction — Defensive agency
+
+An encounter begins as a physical event. An awake, capable target can
+receive a private cue on the following tick that identifies immediate
+danger and the visible inhabitant involved. The cue conveys no organism
+classification. Heavy fatigue or distraction during work can delay
+recognition beyond the encounter window. Sleeping and severe impairment
+remove that opportunity while they persist.
+
+The target considers a known exit, physical resistance, and a call.
+Caution, cooperativeness, health, fatigue, and perceived exits influence
+the decision. The resolver checks location, movement limits, opposing
+capacity, and whether continuation has already resolved in the seeded
+order. A known exit can fail when the interaction is already progressing.
+Successful escape or resistance interrupts the encounter. The opposing
+capacity calculation and recognition thresholds are gameplay assumptions.
+
+A call reaches awake inhabitants in the room or its neighboring rooms. An
+eligible inhabitant whose scheduled action was to wait can decide to enter
+the caller's room before the encounter closes. That reaction uses the
+existing tick's idle action, and other inhabitants may also interrupt an
+encounter simply by entering during their ordinary movement. The
+prototype lacks sound attenuation, finer response durations, and
+intervention while another action is underway. No additional RNG draws
+are used to resolve defense.
+
+The observer links initiation to the private cue, decision evaluations,
+resolved defensive action and encounter result. A call and its induced
+arrival have separate event references. In natural hidden-organism seed
+2, at 240 ticks, `trace 562` follows initiation, recognition, escape and
+interruption at tick 176. Controlled fixtures separately show an alert
+escape, a physically failed escape, failed resistance, sleeping and
+impaired targets, delayed recognition from distraction, a nearby
+intervention, and a call with no nearby listener. The intervention
+fixture replays both event history and RNG state.
+
+#### Comparison with merged PR #9
+
+The paired runs covered three ordinary ten-day runs, twelve low-fuel runs
+at 60 ticks, twelve ration-shortage runs at 800 ticks, and fifty
+hidden-organism runs at 240 ticks. Ordinary, low-fuel, and ration-shortage
+actions matched. All pairs matched survival counts. Resource accounting,
+encounter accounting, causal reference checks and private cue recipients
+passed.
+
+| Hidden-organism result, 50 seeds | PR #9 | D11 slice |
+| --- | ---: | ---: |
+| Attempts | 336 | 441 |
+| Completed / interrupted | 96 / 240 | 48 / 393 |
+| Danger cues | 0 | 153 |
+| Escapes / failed escapes | 0 / 0 | 125 / 20 |
+| Suspicion warnings | 371 | 582 |
+| Containment events | 14 | 17 |
+
+Forty-four hidden-organism action histories changed. More interrupted
+encounters leave more opportunities for later encounters and warnings.
+The comparison shows the resulting change in the simulated histories,
+without establishing a target conversion rate. No calls or resistance
+occurred in this natural batch. The controlled cases exercise those
+options under constrained mobility or room layouts. D09 accusations and
+social reconsideration are the separate next audit assignment.
