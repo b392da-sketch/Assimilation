@@ -1,15 +1,19 @@
 """Read-only inspection and explicit clock control for the terminal observer."""
 
 from dataclasses import asdict
+from fractions import Fraction
 import json
 from pathlib import Path
 from shlex import split
+from time import monotonic_ns, sleep
 
 from .kernel import Event, Simulation
+from .playback import NANOSECONDS_PER_SECOND, Playback
 
 
 HELP = """Commands
   step [N]       Advance N ticks, then pause (default 1).
+  play SECONDS [RATE]  Run for elapsed wall seconds, then pause (default 1×).
   status         Show current time and resources.
   inspect NAME   Show one inhabitant's state, knowledge, and last intent.
   events [N]     Show the most recent N objective events (default 10).
@@ -74,15 +78,47 @@ def status(simulation: Simulation) -> dict:
     return {
         "seed": simulation.seed,
         "tick": simulation.tick,
+        "elapsed_seconds": simulation.elapsed_seconds,
         "food_remaining": simulation.food,
         "power": asdict(simulation.power) if simulation.power else None,
         "locations": {agent.name: agent.room for agent in simulation.inhabitants},
     }
 
 
-def observer_command(simulation: Simulation, words: list[str]) -> object:
+def play_window(playback: Playback, duration: str, rate: str) -> None:
+    try:
+        wall_nanoseconds = int(Fraction(duration) * NANOSECONDS_PER_SECOND)
+        speed = Fraction(rate)
+    except (ValueError, ZeroDivisionError) as error:
+        raise ValueError("Duration and rate must be numbers.") from error
+    if wall_nanoseconds <= 0:
+        raise ValueError("Playback duration must be positive.")
+    playback.resume(speed)
+    last = monotonic_ns()
+    deadline = last + wall_nanoseconds
+    try:
+        while last < deadline:
+            try:
+                sleep(min(0.1, (deadline - last) / NANOSECONDS_PER_SECOND))
+            except KeyboardInterrupt:
+                playback.elapse(min(monotonic_ns(), deadline) - last)
+                break
+            now = min(monotonic_ns(), deadline)
+            playback.elapse(now - last)
+            last = now
+    finally:
+        playback.pause()
+
+
+def observer_command(
+    simulation: Simulation, words: list[str], playback: Playback | None = None,
+) -> object:
     command, *args = words
     if command == "status" and not args:
+        return status(simulation)
+    if command == "play" and 1 <= len(args) <= 2:
+        controller = playback if playback is not None else Playback(simulation)
+        play_window(controller, args[0], args[1] if len(args) == 2 else "1")
         return status(simulation)
     if command == "inspect" and len(args) == 1:
         return inspect_inhabitant(simulation, args[0])
@@ -99,13 +135,13 @@ def observer_command(simulation: Simulation, words: list[str]) -> object:
             raise ValueError("Count must be nonnegative.")
         if command == "events":
             return recent_events(simulation, count)
-        for _ in range(count):
-            simulation.advance()
+        simulation.advance_ticks(count)
         return status(simulation)
     raise ValueError("Unknown command or invalid arguments. Enter help for usage.")
 
 
 def run_observer(simulation: Simulation) -> None:
+    playback = Playback(simulation)
     print("Observer paused. Enter help for commands.")
     while True:
         try:
@@ -117,7 +153,7 @@ def run_observer(simulation: Simulation) -> None:
             if words == ["help"]:
                 print(HELP)
                 continue
-            print(json.dumps(observer_command(simulation, words), indent=2))
+            print(json.dumps(observer_command(simulation, words, playback), indent=2))
         except (EOFError, KeyboardInterrupt):
             print()
             return

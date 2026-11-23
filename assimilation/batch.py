@@ -16,8 +16,7 @@ def evaluate(seed: int, ticks: int, scenario: str, station: Station) -> dict:
     tracemalloc.start()
     try:
         simulation = Simulation(seed, station, hidden_organism=hidden_organism)
-        for _ in range(ticks):
-            simulation.advance()
+        simulation.advance_ticks(ticks)
         _, peak_bytes = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
