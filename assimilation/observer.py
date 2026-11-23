@@ -16,6 +16,7 @@ HELP = """Commands
   play SECONDS [RATE]  Run for elapsed wall seconds, then pause (default 1×).
   status         Show current time and resources.
   inspect NAME   Show one inhabitant's state, knowledge, and last intent.
+  decisions NAME [N]  Show recent choices, evaluated options, and outcomes.
   events [N]     Show the most recent N objective events (default 10).
   trace ID       Follow recorded causes of an objective event.
   export PATH    Write the objective history as JSON Lines to a new file.
@@ -122,6 +123,15 @@ def observer_command(
         return status(simulation)
     if command == "inspect" and len(args) == 1:
         return inspect_inhabitant(simulation, args[0])
+    if command == "decisions" and 1 <= len(args) <= 2:
+        name = args[0]
+        if name not in simulation.agents_by_name:
+            raise ValueError(f"Unknown inhabitant {name!r}.")
+        count = int(args[1]) if len(args) == 2 else 5
+        if count < 0:
+            raise ValueError("Count must be nonnegative.")
+        records = list(simulation.decision_records.get(name, ()))
+        return [asdict(record) for record in records[-count:]] if count else []
     if command == "trace" and len(args) == 1:
         return trace_event(simulation, int(args[0]))
     if command == "export" and len(args) == 1:

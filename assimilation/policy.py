@@ -74,9 +74,17 @@ class DecisionView:
 
 
 @dataclass(frozen=True)
+class Evaluation:
+    option: str
+    reason: str
+    intent: Intent | None = None
+
+
+@dataclass(frozen=True)
 class Decision:
     intent: Intent
     goal: Activity | None
+    evaluations: tuple[Evaluation, ...]
 
 
 def first_step(rooms: dict[str, Room], start: str, matches: Callable[[Room], bool]) -> str | None:
@@ -133,54 +141,112 @@ def power_response(view: DecisionView, rooms: dict[str, Room]) -> Intent | None:
     return Intent("move", step) if step else None
 
 
-def immediate_action(view: DecisionView, rooms: dict[str, Room]) -> Intent | None:
+def immediate_action(
+    view: DecisionView, rooms: dict[str, Room], evaluations: list[Evaluation],
+) -> Intent | None:
     if view.sleeping:
-        return Intent("sleep")
+        return record(evaluations, "sleep", "A sleep block is active.", Intent("sleep"))
+    record(evaluations, "sleep", "No sleep block is active.")
     if view.encounter_target:
-        return Intent("assimilate", recipient=view.encounter_target)
+        return record(evaluations, "continue encounter", "An encounter already has a target.",
+                      Intent("assimilate", recipient=view.encounter_target))
+    record(evaluations, "continue encounter", "No pending encounter.")
     for peer in view.peers:
         if (peer.examination == "anomaly" and not peer.contained
                 and peer.visibly_exhausted and view.fatigue < VISIBLE_EXHAUSTION):
-            return Intent("contain", subject=peer.name)
+            return record(evaluations, "contain", "Local evidence and fatigue permit containment.",
+                          Intent("contain", subject=peer.name))
+    record(evaluations, "contain", "No local peer met the evidence and fatigue conditions.")
     exits = rooms[view.room].neighbors
     if exits and any(peer.concern >= 30 for peer in view.peers if not peer.contained):
-        return Intent("move", exits[0])
+        return record(evaluations, "avoid", "Local concern reached 30 and an exit is known.",
+                      Intent("move", exits[0]))
+    record(evaluations, "avoid", "No exit or no local uncontained peer reached concern 30.")
     for peer in view.peers:
         if (peer.witnessed_at is not None and peer.examination is None and not peer.contained
                 and view.tick >= peer.witnessed_at + 2):
-            return Intent("examine", subject=peer.name)
-    return power_response(view, rooms)
+            return record(evaluations, "examine", "Local firsthand evidence is at least two ticks old.",
+                          Intent("examine", subject=peer.name))
+    record(evaluations, "examine", "No local peer met the firsthand evidence conditions.")
+    response = power_response(view, rooms)
+    if response and view.requester and not view.help_accepted:
+        reason = (f"Requester trust {view.requester_trust} (minimum 65), "
+                  f"fatigue {view.fatigue} (must be below {view.rest_threshold}).")
+    elif response and view.requester:
+        reason = "An accepted request guides the generator response."
+    elif response:
+        reason = "Local cold and the agent's location or duty permit a generator response."
+    else:
+        reason = "No feasible response to local cold or a help request."
+    return record(evaluations, "generator response", reason, response)
+
+
+def record(
+    evaluations: list[Evaluation], option: str, reason: str, intent: Intent | None = None,
+) -> Intent | None:
+    evaluations.append(Evaluation(option, reason, intent))
+    return intent
 
 
 def choose(view: DecisionView) -> Decision:
     rooms = {room.name: room for room in view.map_rooms}
-    action = immediate_action(view, rooms)
+    evaluations: list[Evaluation] = []
+    action = immediate_action(view, rooms, evaluations)
     if action:
-        return Decision(action, view.goal)
+        return Decision(action, view.goal, tuple(evaluations))
 
     belief = view.food_belief
     food_ruled_out = belief is not None and not belief.available and belief.confidence >= 60
     needs = [(view.fatigue - view.rest_threshold, "rest")]
     if not food_ruled_out:
         needs.append((view.hunger - view.meal_threshold, "eat"))
+    else:
+        record(evaluations, "eat", f"Food believed unavailable (confidence {belief.confidence}).")
 
     ranked = sorted(needs, key=lambda need: (need[1] != view.goal, -need[0]))
     for urgency, activity in ranked:
-        if urgency >= 0:
-            target = toward(rooms, view.room, activity)
-            if target:
-                return Decision(target, activity)
+        target = toward(rooms, view.room, activity) if urgency >= 0 else None
+        reason = f"Need minus threshold is {urgency}."
+        if activity == view.goal:
+            reason += " Existing goal takes precedence."
+        if urgency >= 0 and target is None:
+            reason += " No reachable location."
+        record(evaluations, activity, reason, target)
+        if target:
+            return Decision(target, activity, tuple(evaluations))
 
+    action = None
+    reason = "The controller is unavailable or there is no private pair."
     if view.can_start_encounter and len(view.peers) == 1:
         target = view.peers[0].name
         if target not in view.known_converts:
-            return Decision(Intent("assimilate", recipient=target), None)
+            action = Intent("assimilate", recipient=target)
+            reason = "The controller is ready and perceives one eligible local peer."
+        else:
+            reason = "The controller remembers converting this peer."
+    record(evaluations, "start encounter", reason, action)
+    if action:
+        return Decision(action, None, tuple(evaluations))
 
     if view.warning_options:
         recipient, subject = view.warning_options[0]
-        return Decision(Intent("warn", recipient=recipient, subject=subject), None)
+        intent = Intent("warn", recipient=recipient, subject=subject)
+        record(evaluations, "warn", "The speaker has not sent this firsthand report to the local recipient.", intent)
+        return Decision(intent, None, tuple(evaluations))
+    record(evaluations, "warn", "No eligible local recipient for firsthand concerns.")
     if food_ruled_out and view.food_recipients:
-        return Decision(Intent("tell", recipient=view.food_recipients[0]), None)
+        intent = Intent("tell", recipient=view.food_recipients[0])
+        record(evaluations, "tell", "A confident shortage belief can be shared locally.", intent)
+        return Decision(intent, None, tuple(evaluations))
+    record(evaluations, "tell", "No confident shortage belief or eligible recipient.")
     if view.working:
-        return Decision(Intent("continue_work"), None)
-    return Decision(toward(rooms, view.room, "work", view.duty_room) or Intent("wait"), None)
+        intent = Intent("continue_work")
+        record(evaluations, "work", "The current work block is active.", intent)
+    else:
+        intent = toward(rooms, view.room, "work", view.duty_room)
+        reason = "The assigned duty is reachable." if intent else "No route to the assigned duty."
+        record(evaluations, "work", reason, intent)
+    if intent is None:
+        intent = Intent("wait")
+        record(evaluations, "wait", "No earlier option produced an intent.", intent)
+    return Decision(intent, None, tuple(evaluations))

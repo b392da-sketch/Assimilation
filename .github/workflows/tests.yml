@@ -2,7 +2,7 @@ name: Tests
 
 on:
   pull_request:
-    branches: [main, m1-development]
+    branches: [main, "m1-*"]
   push:
     branches: [main]
 
