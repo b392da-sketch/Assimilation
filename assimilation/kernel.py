@@ -691,9 +691,9 @@ class Simulation:
                     or Evidence(report.belief).origin != objection[0]
                     or not self.can_propose_food_check(agent, peer.name, objection[1])):
                 return False
-            agent.proposed_food_checks[peer.name] = (objection[1], self.tick)
             if peer.food_verification and self.tick < peer.food_verification.expires_at:
                 return False
+            agent.proposed_food_checks[peer.name] = (objection[1], self.tick)
             agent.offered_verification = (len(self.history) + 1, self.tick + VERIFICATION_TIMEOUT)
             peer.food_verification = Verification(
                 agent.name, len(self.history) + 1, self.tick + VERIFICATION_TIMEOUT, agent.room,

@@ -65,3 +65,39 @@ class SocialCoordinationTests(unittest.TestCase):
         self.assertEqual(choose(tired).intent.action, "decline_food_check")
         self.assertEqual(choose(replace(ready, verification_trust=35)).intent.action,
                          "decline_food_check")
+
+    def test_busy_recipient_does_not_consume_a_proposal_or_prevent_retry(self):
+        simulation = Simulation(1, replace(DEFAULT_STATION, initial_food=0))
+        first, second, recipient, witness, *_ = simulation.inhabitants
+        recipient.room = "galley"
+        self.assertFalse(simulation.resolve(recipient, Intent("eat")))
+        recipient.room = "quarters"
+        simulation.food = 2
+        witness.room = "galley"
+        self.assertTrue(simulation.resolve(witness, Intent("eat")))
+        witness.room = "quarters"
+        for proposer in (first, second):
+            proposer.relationships[recipient.name].trust = 70
+            proposer.relationships[witness.name].trust = 70
+            self.assertTrue(simulation.resolve(recipient, Intent("tell", recipient=proposer.name)))
+            self.assertTrue(simulation.resolve(witness, Intent("tell", recipient=proposer.name)))
+            self.assertTrue(simulation.resolve(proposer, Intent("doubt_food", recipient=recipient.name)))
+
+        proposal = Intent("propose_food_check", recipient=recipient.name)
+        self.assertTrue(simulation.resolve(first, proposal))
+        busy_plan = recipient.food_verification
+        self.assertTrue(simulation.resolve(recipient, Intent("accept_food_check", recipient=first.name)))
+        existing_plan = recipient.food_verification
+        before = len(simulation.history)
+        existing_objection = second.food_objections[recipient.name]
+        self.assertFalse(simulation.resolve(second, proposal))
+        self.assertEqual(len(simulation.history), before)
+        self.assertEqual(recipient.food_verification, existing_plan)
+        self.assertEqual(second.proposed_food_checks, {})
+        self.assertIsNone(second.offered_verification)
+
+        simulation.tick = busy_plan.expires_at
+        self.assertTrue(simulation.resolve(second, proposal))
+        self.assertEqual(recipient.food_verification.proposer, second.name)
+        self.assertEqual(second.food_objections[recipient.name], existing_objection)
+        self.assertEqual(simulation.history[-1].message.reply_to, existing_objection[1])

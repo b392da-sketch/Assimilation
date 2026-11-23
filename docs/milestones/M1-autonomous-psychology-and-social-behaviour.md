@@ -371,10 +371,10 @@ firsthand observation that resets the question history.
 
 Inspect the active plan with `inspect NAME`, and use `decisions NAME`
 for the consent scores, route intentions, and linked events. In
-ration-shortage seed 2, `trace 1074` shows Lena challenging Jules at tick
-345, proposing a check at tick 347, and receiving the result after he
-accepts, walks to the galley, and checks at tick 351. The report returns
-at tick 354. This run also contains autonomous refusals.
+ration-shortage seed 2, `trace 1079` shows Lena challenging Jules at tick
+345, proposing a check at tick 348, and receiving the result after he
+accepts, walks to the galley, and checks at tick 352. The report returns
+at tick 355. This run also contains autonomous refusals.
 
 #### Comparison with merged PR #8
 
@@ -387,15 +387,19 @@ matched across every pair.
 
 | Ration-shortage result | PR #8 | This slice |
 | --- | ---: | ---: |
-| Questions / answers | 68 / 64 | 106 / 98 |
-| Doubts / challenges | 0 / 0 | 62 / 54 |
-| Proposals | 0 | 78 |
-| Accepted / declined | 0 / 0 | 28 / 45 |
-| Checks / reported results | 0 / 0 | 28 / 21 |
-| Moves | 7,639 | 7,757 |
+| Questions / answers | 68 / 64 | 90 / 85 |
+| Doubts / challenges | 0 / 0 | 57 / 54 |
+| Proposals | 0 | 85 |
+| Accepted / declined | 0 / 0 | 32 / 49 |
+| Checks / reported results | 0 / 0 | 32 / 22 |
+| Moves | 7,639 | 7,791 |
 
-Some proposals went unanswered, and seven completed checks did not
+Some proposals went unanswered, and ten completed checks did not
 produce a report by the cutoff. A check and its delivery are separate
 events. The increase in movement is consistent with adding verification
 trips. The number of each outcome describes these seeds and is not a
 target for tuning.
+
+A proposal blocked by a busy recipient leaves the proposer's history and
+cooldown untouched. The same objection can support a retry when the
+recipient becomes available.
