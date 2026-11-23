@@ -5,7 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from .communication import Assessment, FoodBelief
+from .communication import Assessment, FoodBelief, Verification
 
 Activity = Literal["eat", "rest", "work", "wait"]
 VISIBLE_EXHAUSTION = 9
@@ -71,6 +71,12 @@ class DecisionView:
     food_assessment: Assessment
     food_question_target: str | None
     food_reply_target: str | None
+    food_objection: tuple[str, int] | None
+    food_proposal: tuple[str, int] | None
+    food_verification: Verification | None
+    verification_partner_local: bool
+    verification_trust: int
+    verification_wait: int | None
     waiting_for_food_reply: bool
     food_recipients: tuple[str, ...]
     warning_options: tuple[tuple[str, str], ...]
@@ -239,6 +245,48 @@ def choose(view: DecisionView) -> Decision:
         return Decision(action, view.goal, tuple(evaluations))
 
     assessment = view.food_assessment
+    plan = view.food_verification
+    if plan:
+        if plan.acceptance_id is None and view.verification_partner_local:
+            cooperation = 2 * view.disposition.cooperativeness
+            hunger_cost = 2 * max(0, view.hunger - view.meal_threshold)
+            score = view.verification_trust + cooperation - hunger_cost
+            reachable = toward(rooms, view.room, "eat") is not None
+            willing = score >= 65 and view.fatigue < view.rest_threshold and reachable
+            intent = Intent("accept_food_check" if willing else "decline_food_check",
+                            recipient=plan.proposer)
+            reason = (
+                f"Verification score {score} (minimum 65): trust {view.verification_trust}, "
+                f"cooperation {cooperation}, hunger cost {hunger_cost}. "
+                f"Fatigue {view.fatigue} must be below {view.rest_threshold}. "
+                f"Galley reachable: {reachable}."
+            )
+            record(evaluations, "respond to proposal", reason, intent, (plan.proposal_id,))
+            return Decision(intent, view.goal, tuple(evaluations))
+        if plan.result and view.verification_partner_local:
+            intent = Intent("report_food_check", recipient=plan.proposer)
+            record(evaluations, "report verification", "Share the firsthand check on reunion.",
+                   intent, (plan.acceptance_id, plan.result.source_event))
+            return Decision(intent, view.goal, tuple(evaluations))
+        if plan.result and view.room != plan.meeting_room:
+            step = first_step(rooms, view.room, lambda room: room.name == plan.meeting_room)
+            if step:
+                intent = Intent("move", step)
+                record(evaluations, "return from verification", "Return to the proposed meeting room.",
+                       intent, (plan.acceptance_id, plan.result.source_event))
+                return Decision(intent, view.goal, tuple(evaluations))
+        if plan.acceptance_id and plan.result is None:
+            target = toward(rooms, view.room, "eat")
+            if target:
+                intent = Intent("check_food") if target.action == "eat" else target
+                record(evaluations, "verify stock", "Follow the accepted plan to check the galley.",
+                       intent, (plan.acceptance_id,))
+                return Decision(intent, view.goal, tuple(evaluations))
+    if view.verification_wait and view.hunger < 12 and view.fatigue < view.rest_threshold:
+        intent = Intent("wait")
+        record(evaluations, "await verification", "A peer accepted the plan and needs time to report.",
+               intent, (view.verification_wait,))
+        return Decision(intent, view.goal, tuple(evaluations))
     if view.food_reply_target:
         intent = Intent("answer_food", recipient=view.food_reply_target)
         record(evaluations, "answer", "A local peer asked about food.",
@@ -255,6 +303,22 @@ def choose(view: DecisionView) -> Decision:
         reason = (f"Food evidence conflicts. Available support {assessment.available_score}, "
                   f"unavailable support {assessment.unavailable_score}.")
         record(evaluations, "ask", reason, intent, assessment.trace_ids)
+        return Decision(intent, view.goal, tuple(evaluations))
+
+    if view.food_objection:
+        peer, delivery = view.food_objection
+        intent = Intent("challenge_food" if assessment.belief else "doubt_food", recipient=peer)
+        reason = (
+            f"Available support {assessment.available_score}. "
+            f"Unavailable support {assessment.unavailable_score}."
+        )
+        record(evaluations, "object to report", reason, intent, (*assessment.trace_ids, delivery))
+        return Decision(intent, view.goal, tuple(evaluations))
+    if view.food_proposal:
+        peer, objection_id = view.food_proposal
+        intent = Intent("propose_food_check", recipient=peer)
+        record(evaluations, "propose verification", "The disagreement is unresolved locally.",
+               intent, (objection_id,))
         return Decision(intent, view.goal, tuple(evaluations))
 
     belief = view.food_belief

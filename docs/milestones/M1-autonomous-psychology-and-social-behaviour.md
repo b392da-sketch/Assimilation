@@ -344,3 +344,58 @@ sub-tick conversations. Strong support on both sides can saturate and
 leave a tie. Older information can be dropped after the evidence budget
 fills. Notion was unavailable as a connected source for this slice, so
 the repository specification and the supplied requirements were used.
+
+### Autonomous disagreement and coordination
+
+The first coordinated task is a galley stock check. When retained food
+evidence conflicts, an inhabitant can express doubt or challenge a local
+report. The objection carries the support scores and points to the disputed
+delivery. A challenge can include counterevidence. The agent can propose a
+firsthand check to the same person after the objection, with one live
+outgoing proposal and a per-partner cooldown.
+
+The recipient decides whether to accept using their own trust in the
+proposer, cooperativeness, hunger, fatigue, and route to the galley. An
+acceptance starts a time-limited plan. The recipient moves to the galley,
+checks without consuming food, and can return to the original meeting
+room to report. The proposer can wait briefly if their own needs permit.
+The report remains private and is assessed as testimony if the proposer
+did not witness the check. Proposals expire after twelve ticks. The
+negotiation is bilateral and supports explicitly accepting or declining
+one proposed task. Counteroffers and renegotiating commitments remain
+outside this slice.
+
+Food questions now expire after four ticks. Repeating a question to the
+same person requires new evidence and an eight-tick cooldown, or a new
+firsthand observation that resets the question history.
+
+Inspect the active plan with `inspect NAME`, and use `decisions NAME`
+for the consent scores, route intentions, and linked events. In
+ration-shortage seed 2, `trace 1074` shows Lena challenging Jules at tick
+345, proposing a check at tick 347, and receiving the result after he
+accepts, walks to the galley, and checks at tick 351. The report returns
+at tick 354. This run also contains autonomous refusals.
+
+#### Comparison with merged PR #8
+
+The 77 paired runs covered three ordinary ten-day runs, twelve low-fuel
+runs at 60 ticks, fifty hidden-organism runs at 240 ticks, and twelve
+ration-shortage runs at 800 ticks. The first three groups kept the same
+ordered actions. All twelve shortage histories changed. Food accounting
+and causal references passed their checks, and meal and survivor counts
+matched across every pair.
+
+| Ration-shortage result | PR #8 | This slice |
+| --- | ---: | ---: |
+| Questions / answers | 68 / 64 | 106 / 98 |
+| Doubts / challenges | 0 / 0 | 62 / 54 |
+| Proposals | 0 | 78 |
+| Accepted / declined | 0 / 0 | 28 / 45 |
+| Checks / reported results | 0 / 0 | 28 / 21 |
+| Moves | 7,639 | 7,757 |
+
+Some proposals went unanswered, and seven completed checks did not
+produce a report by the cutoff. A check and its delivery are separate
+events. The increase in movement is consistent with adding verification
+trips. The number of each outcome describes these seeds and is not a
+target for tuning.
