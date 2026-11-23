@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from random import Random
 from typing import Literal
 
+from .communication import Assessment, Evidence, Message, assess, retain
 from .policy import (
     Activity, Decision, DecisionView, Disposition, FoodBelief, Intent, LocalPeer, Room,
     VISIBLE_EXHAUSTION, choose,
@@ -103,6 +104,7 @@ class Observation:
     testimony: FoodBelief | None = None
     concern: SuspicionReport | None = None
     subject: str | None = None
+    message: Message | None = None
 
 
 @dataclass(frozen=True)
@@ -152,6 +154,7 @@ class Event:
     concern: SuspicionReport | None = None
     causes: tuple[int, ...] = ()
     reason: str | None = None
+    message: Message | None = None
 
 
 @dataclass
@@ -166,6 +169,11 @@ class Inhabitant:
     disposition: Disposition = field(default_factory=Disposition)
     memory: deque[Observation] = field(default_factory=lambda: deque(maxlen=32))
     food_belief: FoodBelief | None = None
+    food_evidence: list[Evidence] = field(default_factory=list)
+    food_assessment: Assessment = field(default_factory=Assessment)
+    pending_food_questions: dict[str, int] = field(default_factory=dict)
+    asked_food_peers: set[str] = field(default_factory=set)
+    last_food_question: tuple[str, int] | None = None
     relationships: dict[str, Relationship] = field(default_factory=dict)
     goal: Activity | None = None
     felt_cold: bool = False
@@ -412,6 +420,16 @@ class Simulation:
         encounter = self.encounters.get(agent.name)
         requester = agent.help_requested_by
         relationship = agent.relationships[requester] if requester else None
+        available_peers = [peer for peer in peers if not peer.sleep_until and not peer.contained]
+        question_target = max(
+            (peer for peer in available_peers if peer.name not in agent.asked_food_peers),
+            key=lambda peer: (agent.relationships[peer.name].trust
+                              + agent.relationships[peer.name].food_report_credibility),
+            default=None,
+        ) if agent.food_assessment.conflicted else None
+        reply_target = next((peer.name for peer in available_peers
+                             if peer.name in agent.pending_food_questions), None)
+        question = agent.last_food_question
         return DecisionView(
             tick=self.tick,
             room=agent.room,
@@ -428,6 +446,13 @@ class Simulation:
             sleeping=bool(agent.sleep_until),
             working=self.tick < agent.work_until,
             food_belief=agent.food_belief,
+            food_assessment=agent.food_assessment,
+            food_question_target=question_target.name if question_target else None,
+            food_reply_target=reply_target,
+            waiting_for_food_reply=bool(
+                question and question[1] == self.tick - 1
+                and any(peer.name == question[0] for peer in available_peers)
+            ),
             food_recipients=tuple(peer.name for peer in peers if self.can_share(agent, peer)),
             warning_options=tuple(
                 (peer.name, report.subject)
@@ -494,35 +519,94 @@ class Simulation:
         )
         return True
 
-    def tell(self, agent: Inhabitant, peer: Inhabitant) -> bool:
+    def outgoing_food_claim(self, agent: Inhabitant) -> FoodBelief | None:
         belief = agent.food_belief
+        if belief is None:
+            return None
+        origin = Evidence(belief).origin
+        return next((item.claim for item in agent.food_evidence if item.origin == origin), belief)
+
+    def update_food_evidence(self, agent: Inhabitant, evidence: Evidence) -> None:
+        retain(agent.food_evidence, evidence)
+        agent.food_assessment = assess(agent.food_evidence)
+        agent.food_belief = agent.food_assessment.belief
+
+    def deliver_food_message(
+        self, agent: Inhabitant, peer: Inhabitant, action: str, message: Message,
+    ) -> bool:
+        belief = message.content
+        reason = None
+        event_id = len(self.history) + 1
+        if belief is not None:
+            relationship = peer.relationships[agent.name]
+            credibility = max(0, min(100, relationship.trust + relationship.food_report_credibility))
+            report = FoodBelief(
+                belief.available, belief.observed_at, (*belief.sources, peer.name),
+                belief.confidence * credibility // 100, belief.source_event,
+                (*belief.transmissions, event_id),
+            )
+            self.update_food_evidence(peer, Evidence(report))
+            result = peer.food_assessment
+            reason = (
+                f"Recipient applied credibility {credibility} to this report "
+                f"for weight {report.confidence}. Support is {result.available_score} for "
+                f"available and {result.unavailable_score} for unavailable."
+            )
+            peer.pending_food_reports[agent.name] = HeardFoodReport(event_id, belief)
+
+        parent = (belief.transmissions[-1] if belief.transmissions else belief.source_event) if belief else None
+        causes = tuple(dict.fromkeys(reference for reference in (message.reply_to, parent) if reference))
+        if message.kind == "question":
+            causes = agent.food_assessment.trace_ids
+        self.record(agent, action, agent.room, recipient=peer.name, testimony=belief,
+                    message=message, reason=reason, causes=causes)
+        return True
+
+    def tell(self, agent: Inhabitant, peer: Inhabitant) -> bool:
+        belief = self.outgoing_food_claim(agent)
         if belief is None or not self.can_share(agent, peer):
             return False
         self.shared_reports[agent.name, peer.name] = belief.available
-        relationship = peer.relationships[agent.name]
-        credibility = max(0, min(100, relationship.trust + relationship.food_report_credibility))
-        report = FoodBelief(
-            belief.available,
-            belief.observed_at,
-            (*belief.sources, peer.name),
-            belief.confidence * credibility // 100,
-            belief.source_event,
-        )
-        current = peer.food_belief
-        if current is None or (
-            report.confidence >= 30
-            and report.observed_at >= current.observed_at
-            and (report.confidence > current.confidence or report.observed_at > current.observed_at)
-        ):
-            peer.food_belief = report
-        reason = (
-            f"Recipient applied food-report credibility {relationship.food_report_credibility} "
-            f"to trust {relationship.trust}. Received confidence {report.confidence}."
-            if relationship.food_report_credibility else None
-        )
-        self.record(agent, "tell", agent.room, recipient=peer.name, testimony=belief, reason=reason)
-        peer.pending_food_reports[agent.name] = HeardFoodReport(len(self.history), belief)
-        return True
+        kind = "observation" if len(belief.sources) == 1 else "claim"
+        return self.deliver_food_message(agent, peer, "tell", Message(kind, "food", belief))
+
+    def communicate_about_food(self, agent: Inhabitant, intent: Intent) -> bool:
+        peer = self.agents_by_name.get(intent.recipient)
+        if (peer is None or peer is agent or peer.room != agent.room
+                or not peer.alive or peer.sleep_until):
+            return False
+        if intent.action == "ask_food":
+            if peer.name in agent.asked_food_peers or agent.name in peer.pending_food_questions:
+                return False
+            agent.asked_food_peers.add(peer.name)
+            agent.last_food_question = (peer.name, self.tick)
+            peer.pending_food_questions[agent.name] = len(self.history) + 1
+            message = Message("question", "food")
+        elif intent.action == "answer_food":
+            question = agent.pending_food_questions.pop(peer.name, None)
+            if question is None:
+                return False
+            belief = self.outgoing_food_claim(agent)
+            if belief is not None and peer.name in belief.sources:
+                belief = None
+            message = Message("answer", "food", belief, reply_to=question)
+        else:
+            heard = agent.pending_food_reports.get(peer.name)
+            if heard is None or not agent.food_assessment.conflicted:
+                return False
+            belief = agent.food_belief
+            if intent.action == "challenge_food":
+                if belief is None or belief.available == heard.belief.available:
+                    return False
+                counterclaim = self.outgoing_food_claim(agent)
+                if counterclaim is not None and peer.name in counterclaim.sources:
+                    counterclaim = None
+                message = Message("challenge", "food", counterclaim, reply_to=heard.event_id)
+            else:
+                if belief is not None:
+                    return False
+                message = Message("doubt", "food", reply_to=heard.event_id)
+        return self.deliver_food_message(agent, peer, intent.action, message)
 
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
         if agent.contained or not agent.alive:
@@ -548,6 +632,8 @@ class Simulation:
         elif action == "tell":
             peer = self.agents_by_name.get(intent.recipient)
             return peer is not None and self.tell(agent, peer)
+        elif action in ("ask_food", "answer_food", "doubt_food", "challenge_food"):
+            return self.communicate_about_food(agent, intent)
         elif action == "warn":
             return self.warn(agent, intent)
         elif action == "request_help":
@@ -715,6 +801,11 @@ class Simulation:
                 self.organisms[target.name] = offspring
                 target.memory.clear()
                 target.food_belief = None
+                target.food_evidence.clear()
+                target.food_assessment = Assessment()
+                target.pending_food_questions.clear()
+                target.asked_food_peers.clear()
+                target.last_food_question = None
                 target.suspicion.clear()
                 target.witnessed_concerns.clear()
                 target.heard_concerns.clear()
@@ -827,10 +918,15 @@ class Simulation:
         *, recipient: str | None = None, testimony: FoodBelief | None = None,
         subject: str | None = None, visible_as: str | None = None,
         concern: SuspicionReport | None = None,
-        causes: tuple[int, ...] = (), reason: str | None = None,
+        causes: tuple[int, ...] = (), reason: str | None = None, message: Message | None = None,
     ) -> None:
         observations = []
         event_id = len(self.history) + 1
+        stock_observed = action in ("eat", "found_no_food")
+        if stock_observed:
+            message = Message("observation", "food", FoodBelief(
+                action == "eat", self.tick, (agent.name,), 100, event_id,
+            ))
         for observer in self.inhabitants:
             if not observer.alive or (observer.sleep_until and observer is not agent):
                 continue
@@ -843,7 +939,7 @@ class Simulation:
                 perceived_action = "depart" if observer.room == room else "arrive"
             observation = Observation(
                 self.tick, agent.name, perceived_action, observer.room, testimony, concern,
-                subject if visible_as is None else None,
+                subject if visible_as is None else None, message,
             )
             observer.memory.append(observation)
             observations.append((observer.name, observation))
@@ -859,12 +955,15 @@ class Simulation:
                     observer.witnessed_concerns[agent.name] = SuspicionReport(
                         observer.name, agent.name, self.tick, strength,
                     )
-            if action in ("eat", "found_no_food"):
+            if stock_observed:
                 available = action == "eat"
                 self.verify_food_reports(observer, available, event_id)
-                observer.food_belief = FoodBelief(available, self.tick, (observer.name,), 100, event_id)
+                self.update_food_evidence(observer, Evidence(
+                    FoodBelief(available, self.tick, (observer.name,), 100, event_id), firsthand=True,
+                ))
+                observer.asked_food_peers.clear()
         event = Event(
             self.tick, agent.name, action, room, tuple(observations), destination,
-            recipient, testimony, subject, concern, causes, reason,
+            recipient, testimony, subject, concern, causes, reason, message,
         )
         self.history.append(event)
