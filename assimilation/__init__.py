@@ -1,0 +1,1 @@
+"""Headless Antarctic station simulation."""
