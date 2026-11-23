@@ -175,3 +175,13 @@ and reject an intent after it becomes physically stale. Nine seeded event
 exports match the previous slice byte for byte. Existing priorities are
 preserved. Evaluating alternatives and recording decision reasons remain
 open work.
+
+### Decision traces
+
+The terminal observer's `decisions NAME [N]` command displays evaluated
+options in order, the conditions that informed the selected intent, and
+whether that intent resolved. Each record links events emitted during
+resolution by ID. Later end-of-tick encounter outcomes still use the
+objective event history. The observer retains 32 decisions per inhabitant.
+The policy records only alternatives it reached before short-circuiting.
+It still uses the existing priorities.

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from random import Random
 from typing import Literal
 
-from .policy import Activity, DecisionView, FoodBelief, Intent, LocalPeer, Room, VISIBLE_EXHAUSTION, choose
+from .policy import (
+    Activity, Decision, DecisionView, FoodBelief, Intent, LocalPeer, Room, VISIBLE_EXHAUSTION, choose,
+)
 
 MAX_NEED = 12
 MINUTES_PER_TICK = 10
@@ -197,6 +199,14 @@ class Inhabitant:
         return max(self.suspicion.get(subject, 0), max(reported, default=0))
 
 
+@dataclass(frozen=True)
+class DecisionRecord:
+    tick: int
+    decision: Decision
+    resolved: bool
+    event_ids: tuple[int, ...]
+
+
 class Simulation:
     STEP_SECONDS = MINUTES_PER_TICK * 60
 
@@ -210,6 +220,7 @@ class Simulation:
         self.food = station.initial_food
         self.history: list[Event] = []
         self.last_intents: dict[str, Intent] = {}
+        self.decision_records: dict[str, deque[DecisionRecord]] = defaultdict(lambda: deque(maxlen=32))
         self.resolved_actions = 0
         self.last_power_event: int | None = None
         self.refuel_start_event: int | None = None
@@ -295,14 +306,19 @@ class Simulation:
                 inhabitant.fatigue = min(MAX_NEED, inhabitant.fatigue + exertion + cold_fatigue)
             self.advance_health(inhabitant, exposure)
 
-        intents = [
-            (agent, self.decide(agent)) for agent in self.inhabitants
+        plans = [
+            (agent, self.plan(agent)) for agent in self.inhabitants
             if agent.alive and not agent.contained
         ]
-        self.last_intents = {agent.name: intent for agent, intent in intents}
-        self.random.shuffle(intents)
-        for agent, intent in intents:
-            self.resolved_actions += self.resolve(agent, intent)
+        self.last_intents = {agent.name: decision.intent for agent, decision in plans}
+        self.random.shuffle(plans)
+        for agent, decision in plans:
+            first_event = len(self.history) + 1
+            resolved = self.resolve(agent, decision.intent)
+            self.resolved_actions += resolved
+            self.decision_records[agent.name].append(DecisionRecord(
+                self.tick, decision, resolved, tuple(range(first_event, len(self.history) + 1)),
+            ))
         self.finish_encounters()
 
     def advance_health(self, agent: Inhabitant, exposed: bool) -> None:
@@ -406,9 +422,12 @@ class Simulation:
         )
 
     def decide(self, agent: Inhabitant) -> Intent:
+        return self.plan(agent).intent
+
+    def plan(self, agent: Inhabitant) -> Decision:
         decision = choose(self.perceive(agent))
         agent.goal = decision.goal
-        return decision.intent
+        return decision
 
     def can_share(self, agent: Inhabitant, peer: Inhabitant) -> bool:
         belief = agent.food_belief
