@@ -34,6 +34,17 @@ class FoodBelief:
 
 
 @dataclass(frozen=True)
+class Disposition:
+    cooperativeness: int = 0
+    caution: int = 0
+
+    def __post_init__(self) -> None:
+        if not all(type(value) is int and -5 <= value <= 5
+                   for value in (self.cooperativeness, self.caution)):
+            raise ValueError("Disposition traits must be integers from -5 to 5.")
+
+
+@dataclass(frozen=True)
 class LocalPeer:
     name: str
     visibly_exhausted: bool
@@ -52,6 +63,7 @@ class DecisionView:
     map_rooms: tuple[Room, ...]
     generator_room: str | None
     peers: tuple[LocalPeer, ...]
+    disposition: Disposition
     hunger: int
     fatigue: int
     meal_threshold: int
@@ -120,9 +132,6 @@ def power_response(view: DecisionView, rooms: dict[str, Room]) -> Intent | None:
         return None
     requester = view.requester
     if requester:
-        if not view.help_accepted:
-            willing = view.fatigue < view.rest_threshold and view.requester_trust >= 65
-            return Intent("accept_help" if willing else "decline_help", recipient=requester)
         if view.room == generator:
             return Intent("refuel")
         step = first_step(rooms, view.room, lambda room: room.name == generator)
@@ -158,21 +167,37 @@ def immediate_action(
                           Intent("contain", subject=peer.name))
     record(evaluations, "contain", "No local peer met the evidence and fatigue conditions.")
     exits = rooms[view.room].neighbors
-    if exits and any(peer.concern >= 30 for peer in view.peers if not peer.contained):
-        return record(evaluations, "avoid", "Local concern reached 30 and an exit is known.",
+    caution = view.disposition.caution
+    threshold = 32 - (caution + 5) * 4 // 10
+    concern = max((peer.concern for peer in view.peers if not peer.contained), default=0)
+    evidence = f"Local concern {concern}. Avoidance threshold {threshold} (caution {caution})."
+    if exits and concern >= threshold:
+        return record(evaluations, "avoid", evidence,
                       Intent("move", exits[0]))
-    record(evaluations, "avoid", "No exit or no local uncontained peer reached concern 30.")
+    record(evaluations, "avoid", evidence if exits else evidence + " No exit is known.")
     for peer in view.peers:
         if (peer.witnessed_at is not None and peer.examination is None and not peer.contained
                 and view.tick >= peer.witnessed_at + 2):
             return record(evaluations, "examine", "Local firsthand evidence is at least two ticks old.",
                           Intent("examine", subject=peer.name))
     record(evaluations, "examine", "No local peer met the firsthand evidence conditions.")
+    if view.generator_room and view.requester and not view.help_accepted:
+        cooperation = 2 * view.disposition.cooperativeness
+        hunger_cost = 2 * max(0, view.hunger - view.meal_threshold)
+        fatigue_cost = 3 * max(0, view.fatigue - view.rest_threshold + 2)
+        score = view.requester_trust + cooperation - hunger_cost - fatigue_cost
+        willing = score >= 65 and view.fatigue < view.rest_threshold
+        reason = (
+            f"Help score {score} (minimum 65): trust {view.requester_trust}, "
+            f"cooperation bias {cooperation}, hunger cost {hunger_cost}, fatigue cost {fatigue_cost}. "
+            f"Fatigue {view.fatigue} must be below {view.rest_threshold}."
+        )
+        return record(
+            evaluations, "generator response", reason,
+            Intent("accept_help" if willing else "decline_help", recipient=view.requester),
+        )
     response = power_response(view, rooms)
-    if response and view.requester and not view.help_accepted:
-        reason = (f"Requester trust {view.requester_trust} (minimum 65), "
-                  f"fatigue {view.fatigue} (must be below {view.rest_threshold}).")
-    elif response and view.requester:
+    if response and view.requester:
         reason = "An accepted request guides the generator response."
     elif response:
         reason = "Local cold and the agent's location or duty permit a generator response."
