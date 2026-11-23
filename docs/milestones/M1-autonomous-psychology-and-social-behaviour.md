@@ -211,3 +211,19 @@ completed assimilations rose from 95 to 96, and completed containments
 remained at 14. Across 50 low-fuel runs at 60 ticks, histories matched
 exactly. Those runs did not generate help responses, so the controlled
 request comparison supplies the evidence for that mechanism.
+
+### Learning from cooperation
+
+When someone finishes another inhabitant's refueling work, the original
+worker learns from the assistance if present and awake. The relationship
+retains a count and the most recent supporting event ID after raw memories
+age out. The count adds up to 15 points to future generator help scores.
+General trust and suspicion testimony continue to use their existing rules.
+Bystanders and absent initiators do not acquire this participant experience.
+
+The M1-D08 fixture follows a witnessed refuel completion to a later request.
+The original worker changes from declining at a score of 62 to accepting
+at 67. A departed worker gains no trust from the same completion. Nine
+seeded event histories matched the preceding slice. They do not exercise a
+later request influenced by prior assistance, so that effect is verified
+with the controlled fixture.
