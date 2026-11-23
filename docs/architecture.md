@@ -22,10 +22,12 @@ has its own lineage identity and occupies a body; the original human's memories
 are cleared on conversion while the body and assignment persist.
 
 This prototype models human perception by room, with separate arrival and
-departure observations and private messages between named participants. The
-decision policy receives local opportunities through the engine's room query.
-Resolution reads objective state to enforce physical preconditions. These
-boundaries are currently enforced by simulation code and tests in one module.
+departure observations and private messages between named participants. The kernel
+builds a frozen decision view with the known map, local peers and visible cues,
+and the agent's own goals and beliefs. The policy receives no simulation object
+or live peers. It returns an intent and the agent's next routine goal. The
+resolver rechecks physical conditions. Visible exhaustion uses a threshold,
+and duty assignments are treated as known from the station roster.
 
 The observer renders data from the kernel. Its inspection, trace and export
 commands do not execute decision logic. Later camera presentation can render

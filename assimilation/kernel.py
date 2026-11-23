@@ -3,28 +3,19 @@
 from __future__ import annotations
 
 from collections import deque
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from random import Random
 from typing import Literal
 
-Activity = Literal["eat", "rest", "work", "wait"]
+from .policy import Activity, DecisionView, FoodBelief, Intent, LocalPeer, Room, VISIBLE_EXHAUSTION, choose
+
 MAX_NEED = 12
-VISIBLE_EXHAUSTION = 9
 MINUTES_PER_TICK = 10
 TICKS_PER_HOUR = 60 // MINUTES_PER_TICK
 STARVATION_TICKS = 3 * 24 * TICKS_PER_HOUR
 COLD_INJURY_TICKS = 3 * 60 // MINUTES_PER_TICK
 SLEEP_TICKS = 7 * TICKS_PER_HOUR
 WORK_TICKS = TICKS_PER_HOUR
-
-
-@dataclass(frozen=True)
-class Room:
-    name: str
-    neighbors: tuple[str, ...]
-    activities: tuple[Activity, ...] = ()
-    outdoors: bool = False
 
 
 @dataclass(frozen=True)
@@ -106,14 +97,6 @@ class Observation:
     testimony: FoodBelief | None = None
     concern: SuspicionReport | None = None
     subject: str | None = None
-
-
-@dataclass(frozen=True)
-class FoodBelief:
-    available: bool
-    observed_at: int
-    sources: tuple[str, ...]
-    confidence: int
 
 
 @dataclass(frozen=True)
@@ -212,14 +195,6 @@ class Inhabitant:
             if report.subject == subject
         )
         return max(self.suspicion.get(subject, 0), max(reported, default=0))
-
-
-@dataclass(frozen=True)
-class Intent:
-    action: str
-    destination: str | None = None
-    recipient: str | None = None
-    subject: str | None = None
 
 
 class Simulation:
@@ -379,91 +354,61 @@ class Simulation:
             ))
             self.last_power_event = len(self.history)
 
-    def decide(self, agent: Inhabitant) -> Intent:
-        if agent.sleep_until:
-            return Intent("sleep")
-        organism = self.organisms.get(agent.name)
-        if agent.name in self.encounters:
-            return Intent("assimilate", recipient=self.encounters[agent.name].target)
+    def perceive(self, agent: Inhabitant) -> DecisionView:
+        generator = self.station.power.generator_room if self.station.power else None
         peers = self.others_present(agent)
+        observations = []
         for peer in peers:
-            if (agent.examinations.get(peer.name) == "anomaly" and not peer.contained
-                    and peer.fatigue >= VISIBLE_EXHAUSTION > agent.fatigue):
-                return Intent("contain", subject=peer.name)
-        exits = self.rooms[agent.room].neighbors
-        if exits and any(agent.concern_about(peer.name) >= 30
-                         for peer in peers if not peer.contained):
-            return Intent("move", exits[0])
-        for peer in peers:
-            report = agent.witnessed_concerns.get(peer.name)
-            if (report and peer.name not in agent.examinations and not peer.contained
-                    and self.tick >= report.observed_at + 2):
-                return Intent("examine", subject=peer.name)
-
-        if self.station.power:
-            response = self.power_response(agent)
-            if response:
-                return response
-
-        belief = agent.food_belief
-        food_ruled_out = belief is not None and not belief.available and belief.confidence >= 60
-        needs = [(agent.fatigue - agent.rest_threshold, "rest")]
-        if not food_ruled_out:
-            needs.append((agent.hunger - agent.meal_threshold, "eat"))
-
-        # Finish a feasible need-driven trip before choosing another routine.
-        ranked = sorted(needs, key=lambda need: (need[1] != agent.goal, -need[0]))
-        for urgency, activity in ranked:
-            if urgency < 0:
-                continue
-            target = self.toward(agent.room, activity)
-            if target:
-                agent.goal = activity
-                return target
-
-        agent.goal = None
-        if organism and self.tick >= organism.recovery_until:
-            others = self.others_present(agent)
-            if len(others) == 1 and others[0].name not in organism.converted:
-                return Intent("assimilate", recipient=others[0].name)
-
-        for report in agent.witnessed_concerns.values():
-            for peer in self.others_present(agent):
-                if self.can_warn(agent, peer, report):
-                    return Intent("warn", recipient=peer.name, subject=report.subject)
-
-        if belief is not None and not belief.available and belief.confidence >= 60:
-            for peer in self.inhabitants:
-                if self.can_share(agent, peer):
-                    return Intent("tell", recipient=peer.name)
-
-        if self.tick < agent.work_until:
-            return Intent("continue_work")
-        return self.toward(agent.room, "work", agent.duty_room) or Intent("wait")
-
-    def power_response(self, agent: Inhabitant) -> Intent | None:
-        generator = self.station.power.generator_room
+            witnessed = agent.witnessed_concerns.get(peer.name)
+            observations.append(LocalPeer(
+                name=peer.name,
+                visibly_exhausted=peer.fatigue >= VISIBLE_EXHAUSTION,
+                contained=peer.contained,
+                available_for_generator_help=peer.duty_room != generator and not peer.sleep_until,
+                concern=agent.concern_about(peer.name),
+                witnessed_at=witnessed.observed_at if witnessed else None,
+                examination=agent.examinations.get(peer.name),
+            ))
+        organism = self.organisms.get(agent.name)
+        encounter = self.encounters.get(agent.name)
         requester = agent.help_requested_by
-        if requester:
-            if not agent.help_accepted:
-                willing = agent.fatigue < agent.rest_threshold and agent.relationships[requester].trust >= 65
-                return Intent("accept_help" if willing else "decline_help", recipient=requester)
-            if agent.room == generator:
-                return Intent("refuel")
-            step = self.first_step(agent.room, lambda room: room.name == generator)
-            return Intent("move", step) if step else Intent("decline_help", recipient=requester)
-        if not agent.felt_cold or agent.checked_generator:
-            return None
-        if agent.room == generator:
-            return Intent("refuel")
-        if agent.duty_room != generator:
-            return None
-        if not agent.requested_help_from:
-            for peer in self.others_present(agent):
-                if peer.duty_room != generator and not peer.sleep_until:
-                    return Intent("request_help", recipient=peer.name)
-        step = self.first_step(agent.room, lambda room: room.name == generator)
-        return Intent("move", step) if step else None
+        return DecisionView(
+            tick=self.tick,
+            room=agent.room,
+            duty_room=agent.duty_room,
+            map_rooms=self.station.rooms,
+            generator_room=generator,
+            peers=tuple(observations),
+            hunger=agent.hunger,
+            fatigue=agent.fatigue,
+            meal_threshold=agent.meal_threshold,
+            rest_threshold=agent.rest_threshold,
+            goal=agent.goal,
+            sleeping=bool(agent.sleep_until),
+            working=self.tick < agent.work_until,
+            food_belief=agent.food_belief,
+            food_recipients=tuple(peer.name for peer in peers if self.can_share(agent, peer)),
+            warning_options=tuple(
+                (peer.name, report.subject)
+                for report in agent.witnessed_concerns.values()
+                for peer in peers
+                if self.can_warn(agent, peer, report)
+            ),
+            felt_cold=agent.felt_cold,
+            checked_generator=agent.checked_generator,
+            already_requested_help=bool(agent.requested_help_from),
+            requester=requester,
+            requester_trust=agent.relationships[requester].trust if requester else 0,
+            help_accepted=agent.help_accepted,
+            encounter_target=encounter.target if encounter else None,
+            can_start_encounter=organism is not None and self.tick >= organism.recovery_until,
+            known_converts=frozenset(organism.converted) if organism else frozenset(),
+        )
+
+    def decide(self, agent: Inhabitant) -> Intent:
+        decision = choose(self.perceive(agent))
+        agent.goal = decision.goal
+        return decision.intent
 
     def can_share(self, agent: Inhabitant, peer: Inhabitant) -> bool:
         belief = agent.food_belief
@@ -520,29 +465,6 @@ class Simulation:
             peer.food_belief = report
         self.record(agent, "tell", agent.room, recipient=peer.name, testimony=belief)
         return True
-
-    def toward(self, start: str, activity: Activity, target: str | None = None) -> Intent | None:
-        def matches(room: Room) -> bool:
-            return activity in room.activities and (target is None or target == room.name)
-
-        if matches(self.rooms[start]):
-            return Intent(activity)
-        step = self.first_step(start, matches)
-        return Intent("move", step) if step else None
-
-    def first_step(self, start: str, matches: Callable[[Room], bool]) -> str | None:
-        queue = deque([(start, None)])
-        visited = {start}
-        while queue:
-            name, first_step = queue.popleft()
-            room = self.rooms[name]
-            if matches(room):
-                return first_step
-            for neighbor in room.neighbors:
-                if neighbor not in visited:
-                    visited.add(neighbor)
-                    queue.append((neighbor, first_step or neighbor))
-        return None
 
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
         if agent.contained or not agent.alive:

@@ -161,3 +161,17 @@ interruption test verifies that moving cancels an existing M0 work block.
 Finer action scheduling and policy perception views remain subsequent
 slices. The dossier links were unavailable as a connected source for
 this slice; the supplied specification governs its temporal design.
+
+### Local perception slice
+
+The policy takes a frozen view and returns an intent and updated routine
+goal. Local peers are represented by names and observable cues. Their
+private beliefs, remote locations and objective organism status stay
+outside the input. The kernel constructs the view and rechecks physical
+conditions when applying the intent.
+
+Tests vary hidden facts without changing the view, exercise a visible cue,
+and reject an intent after it becomes physically stale. Nine seeded event
+exports match the previous slice byte for byte. Existing priorities are
+preserved. Evaluating alternatives and recording decision reasons remain
+open work.
