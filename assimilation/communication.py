@@ -3,9 +3,13 @@
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from .allegations import SuspicionReport
+
 MessageKind = Literal[
     "observation", "claim", "question", "answer", "doubt", "challenge",
     "proposal", "acceptance", "decline", "verification report",
+    "suspicion report", "accusation", "explanation", "question evidence",
+    "examination request", "examination consent", "examination refusal",
 ]
 EVIDENCE_LIMIT = 12
 MINIMUM_MARGIN = 20
@@ -32,6 +36,7 @@ class Message:
     content: FoodBelief | None = None
     reply_to: int | None = None
     reason: str | None = None
+    suspicion: SuspicionReport | None = None
 
 
 @dataclass(frozen=True)
