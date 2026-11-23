@@ -3,9 +3,16 @@
 from dataclasses import dataclass, replace
 from typing import Literal
 
-MessageKind = Literal["observation", "claim", "question", "answer", "doubt", "challenge"]
+MessageKind = Literal[
+    "observation", "claim", "question", "answer", "doubt", "challenge",
+    "proposal", "acceptance", "decline", "verification report",
+]
 EVIDENCE_LIMIT = 12
 MINIMUM_MARGIN = 20
+QUESTION_TIMEOUT = 4
+QUESTION_COOLDOWN = 8
+VERIFICATION_TIMEOUT = 12
+VERIFICATION_COOLDOWN = 18
 
 
 @dataclass(frozen=True)
@@ -24,6 +31,17 @@ class Message:
     topic: str
     content: FoodBelief | None = None
     reply_to: int | None = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class Verification:
+    proposer: str
+    proposal_id: int
+    expires_at: int
+    meeting_room: str
+    acceptance_id: int | None = None
+    result: FoodBelief | None = None
 
 
 @dataclass(frozen=True)

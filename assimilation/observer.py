@@ -70,6 +70,7 @@ def inspect_inhabitant(simulation: Simulation, name: str) -> dict:
         "organism": organism.identity if organism else None,
         "food_belief": asdict(agent.food_belief) if agent.food_belief else None,
         "food_assessment": asdict(agent.food_assessment),
+        "food_verification": asdict(agent.food_verification) if agent.food_verification else None,
         "food_evidence": [asdict(evidence) for evidence in agent.food_evidence],
         "relationships": {peer: asdict(relationship) for peer, relationship in agent.relationships.items()},
         "witnessed_concerns": [asdict(report) for report in agent.witnessed_concerns.values()],

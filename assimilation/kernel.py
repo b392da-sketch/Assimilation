@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections import defaultdict, deque
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from random import Random
 from typing import Literal
 
-from .communication import Assessment, Evidence, Message, assess, retain
+from .communication import (
+    QUESTION_COOLDOWN, QUESTION_TIMEOUT, VERIFICATION_COOLDOWN, VERIFICATION_TIMEOUT,
+    Assessment, Evidence, Message, Verification, assess, retain,
+)
 from .policy import (
     Activity, Decision, DecisionView, Disposition, FoodBelief, Intent, LocalPeer, Room,
     VISIBLE_EXHAUSTION, choose,
@@ -171,8 +174,13 @@ class Inhabitant:
     food_belief: FoodBelief | None = None
     food_evidence: list[Evidence] = field(default_factory=list)
     food_assessment: Assessment = field(default_factory=Assessment)
-    pending_food_questions: dict[str, int] = field(default_factory=dict)
-    asked_food_peers: set[str] = field(default_factory=set)
+    pending_food_questions: dict[str, tuple[int, int]] = field(default_factory=dict)
+    asked_food_peers: dict[str, tuple[int, tuple[int, ...]]] = field(default_factory=dict)
+    food_objections: dict[str, tuple[int | tuple[str, int, bool], int]] = field(default_factory=dict)
+    proposed_food_checks: dict[str, tuple[int, int]] = field(default_factory=dict)
+    food_verification: Verification | None = None
+    verification_wait: tuple[int, int] | None = None
+    offered_verification: tuple[int, int] | None = None
     last_food_question: tuple[str, int] | None = None
     relationships: dict[str, Relationship] = field(default_factory=dict)
     goal: Activity | None = None
@@ -303,6 +311,15 @@ class Simulation:
         for inhabitant in self.inhabitants:
             if not inhabitant.alive:
                 continue
+            for source, (_, expires) in tuple(inhabitant.pending_food_questions.items()):
+                if self.tick >= expires:
+                    del inhabitant.pending_food_questions[source]
+            if inhabitant.food_verification and self.tick >= inhabitant.food_verification.expires_at:
+                inhabitant.food_verification = None
+            if inhabitant.verification_wait and self.tick >= inhabitant.verification_wait[1]:
+                inhabitant.verification_wait = None
+            if inhabitant.offered_verification and self.tick >= inhabitant.offered_verification[1]:
+                inhabitant.offered_verification = None
             inhabitant.hunger_clock += 1
             if inhabitant.hunger_clock == TICKS_PER_HOUR:
                 inhabitant.hunger_clock = 0
@@ -421,14 +438,32 @@ class Simulation:
         requester = agent.help_requested_by
         relationship = agent.relationships[requester] if requester else None
         available_peers = [peer for peer in peers if not peer.sleep_until and not peer.contained]
+        available_names = {peer.name for peer in available_peers}
+        objections = []
+        proposals = []
+        for name, report in agent.pending_food_reports.items():
+            if name not in available_names or not agent.food_assessment.conflicted:
+                continue
+            belief = agent.food_belief
+            if belief is not None and belief.available == report.belief.available:
+                continue
+            previous = agent.food_objections.get(name)
+            if previous is None or previous[0] != Evidence(report.belief).origin:
+                objections.append((name, report.event_id))
+            elif self.can_propose_food_check(agent, name, previous[1]):
+                proposals.append((name, previous[1]))
+        verification = agent.food_verification
+        if verification and self.tick >= verification.expires_at:
+            verification = None
         question_target = max(
-            (peer for peer in available_peers if peer.name not in agent.asked_food_peers),
+            (peer for peer in available_peers if self.can_question_food(agent, peer.name)),
             key=lambda peer: (agent.relationships[peer.name].trust
                               + agent.relationships[peer.name].food_report_credibility),
             default=None,
         ) if agent.food_assessment.conflicted else None
         reply_target = next((peer.name for peer in available_peers
-                             if peer.name in agent.pending_food_questions), None)
+                             if peer.name in agent.pending_food_questions
+                             and self.tick < agent.pending_food_questions[peer.name][1]), None)
         question = agent.last_food_question
         return DecisionView(
             tick=self.tick,
@@ -449,6 +484,15 @@ class Simulation:
             food_assessment=agent.food_assessment,
             food_question_target=question_target.name if question_target else None,
             food_reply_target=reply_target,
+            food_objection=next(iter(objections), None),
+            food_proposal=next(iter(proposals), None),
+            food_verification=verification,
+            verification_partner_local=bool(verification and verification.proposer in available_names),
+            verification_trust=agent.relationships[verification.proposer].trust if verification else 0,
+            verification_wait=(
+                agent.verification_wait[0]
+                if agent.verification_wait and self.tick < agent.verification_wait[1] else None
+            ),
             waiting_for_food_reply=bool(
                 question and question[1] == self.tick - 1
                 and any(peer.name == question[0] for peer in available_peers)
@@ -535,7 +579,7 @@ class Simulation:
         self, agent: Inhabitant, peer: Inhabitant, action: str, message: Message,
     ) -> bool:
         belief = message.content
-        reason = None
+        reason = message.reason
         event_id = len(self.history) + 1
         if belief is not None:
             relationship = peer.relationships[agent.name]
@@ -570,43 +614,128 @@ class Simulation:
         kind = "observation" if len(belief.sources) == 1 else "claim"
         return self.deliver_food_message(agent, peer, "tell", Message(kind, "food", belief))
 
+    def can_question_food(self, agent: Inhabitant, peer: str) -> bool:
+        previous = agent.asked_food_peers.get(peer)
+        return previous is None or (
+            self.tick >= previous[0] + QUESTION_COOLDOWN
+            and agent.food_assessment.evidence_ids != previous[1]
+        )
+
     def communicate_about_food(self, agent: Inhabitant, intent: Intent) -> bool:
         peer = self.agents_by_name.get(intent.recipient)
         if (peer is None or peer is agent or peer.room != agent.room
                 or not peer.alive or peer.sleep_until):
             return False
         if intent.action == "ask_food":
-            if peer.name in agent.asked_food_peers or agent.name in peer.pending_food_questions:
+            pending = peer.pending_food_questions.get(agent.name)
+            if not self.can_question_food(agent, peer.name) or pending and self.tick < pending[1]:
                 return False
-            agent.asked_food_peers.add(peer.name)
+            agent.asked_food_peers[peer.name] = (self.tick, agent.food_assessment.evidence_ids)
             agent.last_food_question = (peer.name, self.tick)
-            peer.pending_food_questions[agent.name] = len(self.history) + 1
+            peer.pending_food_questions[agent.name] = (len(self.history) + 1, self.tick + QUESTION_TIMEOUT)
             message = Message("question", "food")
         elif intent.action == "answer_food":
             question = agent.pending_food_questions.pop(peer.name, None)
-            if question is None:
+            if question is None or self.tick >= question[1]:
                 return False
             belief = self.outgoing_food_claim(agent)
             if belief is not None and peer.name in belief.sources:
                 belief = None
-            message = Message("answer", "food", belief, reply_to=question)
+            message = Message("answer", "food", belief, reply_to=question[0])
         else:
             heard = agent.pending_food_reports.get(peer.name)
             if heard is None or not agent.food_assessment.conflicted:
                 return False
+            previous = agent.food_objections.get(peer.name)
+            origin = Evidence(heard.belief).origin
+            if previous and previous[0] == origin:
+                return False
             belief = agent.food_belief
+            explanation = (
+                f"Available support {agent.food_assessment.available_score}. "
+                f"Unavailable support {agent.food_assessment.unavailable_score}."
+            )
             if intent.action == "challenge_food":
                 if belief is None or belief.available == heard.belief.available:
                     return False
                 counterclaim = self.outgoing_food_claim(agent)
                 if counterclaim is not None and peer.name in counterclaim.sources:
                     counterclaim = None
-                message = Message("challenge", "food", counterclaim, reply_to=heard.event_id)
+                message = Message("challenge", "food", counterclaim, reply_to=heard.event_id, reason=explanation)
             else:
                 if belief is not None:
                     return False
-                message = Message("doubt", "food", reply_to=heard.event_id)
+                message = Message("doubt", "food", reply_to=heard.event_id, reason=explanation)
+            agent.food_objections[peer.name] = (origin, len(self.history) + 1)
         return self.deliver_food_message(agent, peer, intent.action, message)
+
+    def coordinate_food_check(self, agent: Inhabitant, intent: Intent) -> bool:
+        action = intent.action
+        plan = agent.food_verification
+        if action == "check_food":
+            if (plan is None or plan.acceptance_id is None or plan.result is not None
+                    or self.tick >= plan.expires_at or "eat" not in self.rooms[agent.room].activities):
+                return False
+            self.record(agent, action, agent.room, causes=(plan.acceptance_id,))
+            agent.food_verification = replace(plan, result=self.history[-1].message.content)
+            return True
+
+        peer = self.agents_by_name.get(intent.recipient)
+        if (peer is None or peer is agent or peer.room != agent.room
+                or not peer.alive or peer.sleep_until or peer.contained):
+            return False
+        if action == "propose_food_check":
+            objection = agent.food_objections.get(peer.name)
+            report = agent.pending_food_reports.get(peer.name)
+            if (objection is None or report is None or not agent.food_assessment.conflicted
+                    or Evidence(report.belief).origin != objection[0]
+                    or not self.can_propose_food_check(agent, peer.name, objection[1])):
+                return False
+            if peer.food_verification and self.tick < peer.food_verification.expires_at:
+                return False
+            agent.proposed_food_checks[peer.name] = (objection[1], self.tick)
+            agent.offered_verification = (len(self.history) + 1, self.tick + VERIFICATION_TIMEOUT)
+            peer.food_verification = Verification(
+                agent.name, len(self.history) + 1, self.tick + VERIFICATION_TIMEOUT, agent.room,
+            )
+            return self.deliver_food_message(
+                agent, peer, action, Message("proposal", "food", reply_to=objection[1],
+                                             reason="Propose a firsthand stock check."),
+            )
+        if plan is None or plan.proposer != peer.name or self.tick >= plan.expires_at:
+            return False
+        if action == "report_food_check":
+            if plan.result is None:
+                return False
+            agent.food_verification = None
+            if peer.verification_wait and peer.verification_wait[0] == plan.acceptance_id:
+                peer.verification_wait = None
+            if peer.offered_verification and peer.offered_verification[0] == plan.proposal_id:
+                peer.offered_verification = None
+            return self.deliver_food_message(
+                agent, peer, action, Message("verification report", "food", plan.result,
+                                             reply_to=plan.acceptance_id),
+            )
+        if plan.acceptance_id is not None:
+            return False
+        accepted = action == "accept_food_check"
+        agent.food_verification = replace(plan, acceptance_id=len(self.history) + 1) if accepted else None
+        if accepted:
+            peer.verification_wait = (len(self.history) + 1, min(plan.expires_at, self.tick + 6))
+        elif peer.offered_verification and peer.offered_verification[0] == plan.proposal_id:
+            peer.offered_verification = None
+        return self.deliver_food_message(
+            agent, peer, action, Message("acceptance" if accepted else "decline", "food",
+                                         reply_to=plan.proposal_id),
+        )
+
+    def can_propose_food_check(self, agent: Inhabitant, peer: str, objection_id: int) -> bool:
+        if agent.offered_verification and self.tick < agent.offered_verification[1]:
+            return False
+        previous = agent.proposed_food_checks.get(peer)
+        return previous is None or (
+            previous[0] != objection_id and self.tick >= previous[1] + VERIFICATION_COOLDOWN
+        )
 
     def resolve(self, agent: Inhabitant, intent: Intent) -> bool:
         if agent.contained or not agent.alive:
@@ -634,6 +763,9 @@ class Simulation:
             return peer is not None and self.tell(agent, peer)
         elif action in ("ask_food", "answer_food", "doubt_food", "challenge_food"):
             return self.communicate_about_food(agent, intent)
+        elif action in ("propose_food_check", "accept_food_check", "decline_food_check",
+                        "report_food_check", "check_food"):
+            return self.coordinate_food_check(agent, intent)
         elif action == "warn":
             return self.warn(agent, intent)
         elif action == "request_help":
@@ -805,6 +937,11 @@ class Simulation:
                 target.food_assessment = Assessment()
                 target.pending_food_questions.clear()
                 target.asked_food_peers.clear()
+                target.food_objections.clear()
+                target.proposed_food_checks.clear()
+                target.food_verification = None
+                target.verification_wait = None
+                target.offered_verification = None
                 target.last_food_question = None
                 target.suspicion.clear()
                 target.witnessed_concerns.clear()
@@ -922,10 +1059,11 @@ class Simulation:
     ) -> None:
         observations = []
         event_id = len(self.history) + 1
-        stock_observed = action in ("eat", "found_no_food")
+        stock_observed = action in ("eat", "found_no_food", "check_food")
         if stock_observed:
             message = Message("observation", "food", FoodBelief(
-                action == "eat", self.tick, (agent.name,), 100, event_id,
+                action == "eat" or action == "check_food" and self.food > 0,
+                self.tick, (agent.name,), 100, event_id,
             ))
         for observer in self.inhabitants:
             if not observer.alive or (observer.sleep_until and observer is not agent):
@@ -956,7 +1094,7 @@ class Simulation:
                         observer.name, agent.name, self.tick, strength,
                     )
             if stock_observed:
-                available = action == "eat"
+                available = message.content.available
                 self.verify_food_reports(observer, available, event_id)
                 self.update_food_evidence(observer, Evidence(
                     FoodBelief(available, self.tick, (observer.name,), 100, event_id), firsthand=True,
