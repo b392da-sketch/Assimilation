@@ -31,8 +31,7 @@ def main() -> None:
     simulation = Simulation(args.seed, station, hidden_organism=args.scenario == "hidden-organism")
     if args.observe and args.observe not in {agent.name for agent in simulation.inhabitants}:
         parser.error(f"unknown inhabitant {args.observe!r}")
-    for _ in range(ticks):
-        simulation.advance()
+    simulation.advance_ticks(ticks)
 
     if args.interactive:
         run_observer(simulation)

@@ -30,6 +30,12 @@ remain inspectable with their timestamps and participants. `export "run.jsonl"`
 writes an objective event history to a new file. Use `help` for the command
 list and `quit` to exit.
 
+The M1 observer also supports `play SECONDS [RATE]`. For example,
+`play 10 60` schedules ten simulated minutes over ten wall-clock seconds
+and then pauses. The default is 1×. Logical state is published at the
+current ten-minute engine boundaries. See the
+[M1 working specification](docs/milestones/M1-autonomous-psychology-and-social-behaviour.md).
+
 ## Simulation rules
 
 A configurable graph represents the station. Each tick increases needs,

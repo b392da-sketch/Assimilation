@@ -223,6 +223,8 @@ class Intent:
 
 
 class Simulation:
+    STEP_SECONDS = MINUTES_PER_TICK * 60
+
     def __init__(
         self, seed: int, station: Station = DEFAULT_STATION, *, hidden_organism: bool = False,
     ) -> None:
@@ -274,6 +276,16 @@ class Simulation:
         if hidden_organism:
             body = self.random.choice(self.inhabitants).name
             self.organisms[body] = Organism(1, None, body)
+
+    @property
+    def elapsed_seconds(self) -> int:
+        return self.tick * self.STEP_SECONDS
+
+    def advance_ticks(self, ticks: int) -> None:
+        if ticks < 0:
+            raise ValueError("Tick count must be nonnegative.")
+        for _ in range(ticks):
+            self.advance()
 
     def advance(self) -> None:
         self.tick += 1
